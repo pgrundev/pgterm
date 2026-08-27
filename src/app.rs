@@ -553,7 +553,9 @@ impl App {
         {
             popup.message = Some(Err(SafeError::new(
                 crate::sanitize::ErrorKind::EnvMissing,
-                &format!("Environment variable {env} is not set."),
+                &format!(
+                    "Environment variable {env} is not set — export it in the shell that launches pgterm, then restart."
+                ),
                 None,
             )));
             return Vec::new();
@@ -1234,5 +1236,29 @@ mod tests {
 
     fn press_code(a: &mut App, code: KeyCode) {
         a.update(key(code));
+    }
+
+    #[test]
+    fn popup_explains_when_a_url_is_typed_instead_of_a_var_name() {
+        let _g = popup_env_guard();
+        let mut a = app(1);
+        a.update(key(KeyCode::Char('a')));
+        {
+            let p = a.popup.as_mut().unwrap();
+            p.name = "newdb".into();
+            p.env = "postgres://alex:hunter2@db/app".into();
+        }
+        let effects = a.popup_submit(true);
+        assert!(effects.is_empty(), "no probe for a malformed reference");
+        let msg = a
+            .popup
+            .as_ref()
+            .unwrap()
+            .message
+            .clone()
+            .unwrap()
+            .unwrap_err();
+        assert!(msg.message.contains("connection string"), "{}", msg.message);
+        assert!(!msg.message.contains("hunter2"), "{}", msg.message);
     }
 }

@@ -236,3 +236,21 @@ fn probe_uses_pgbot_bin_not_path() {
     );
     assert!(Path::new(&s.fake).exists());
 }
+
+#[test]
+fn env_flag_with_a_url_gets_guidance_not_an_echo() {
+    let s = Setup::new("add-url-as-env");
+    let out = run(&mut s.cmd(&[
+        "add",
+        "prod",
+        "--env",
+        "postgres://alex:hunter2@db.example/app",
+    ]));
+    assert_eq!(out.status.code(), Some(1));
+    let se = stderr(&out);
+    assert!(se.contains("connection string"), "{se}");
+    assert!(se.contains("export"), "{se}");
+    assert!(!se.contains("hunter2"), "password echoed to stderr: {se}");
+    assert!(se.contains("Nothing was saved."), "{se}");
+    assert!(!s.config_path().exists());
+}

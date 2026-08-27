@@ -121,8 +121,15 @@ impl TerminalConfig {
         if env.is_empty() {
             bail!("environment variable name is empty");
         }
+        if looks_like_connection_string(env) {
+            bail!(
+                "that looks like a connection string — pgterm stores variable NAMES, never URLs. \
+                 Export it first (export MY_DB_URL='postgresql://...'), then reference MY_DB_URL"
+            );
+        }
         if !env.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            bail!("{env:?} is not a valid environment variable name");
+            // Never echo the rejected input: it may be a mistyped DSN.
+            bail!("not a valid environment variable name (letters, digits and '_' only)");
         }
         if self.databases.iter().any(|d| d.name == name) {
             bail!("database \"{name}\" already exists (pgterm list)");
@@ -149,13 +156,27 @@ fn validate_name(name: &str) -> anyhow::Result<()> {
     if name.len() > 64 {
         bail!("database name is longer than 64 characters");
     }
+    if looks_like_connection_string(name) {
+        bail!(
+            "that looks like a connection string — the name is just a label (prod, staging). \
+             The URL goes into an environment variable referenced by --env"
+        );
+    }
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     {
-        bail!("database name {name:?} may only contain letters, digits, '.', '_' and '-'");
+        // Never echo the rejected input: it may be a mistyped DSN.
+        bail!("database name may only contain letters, digits, '.', '_' and '-'");
     }
     Ok(())
+}
+
+/// A URL or keyword-DSN shape where a name was expected. Deliberately broad:
+/// anything with '://', '=', or whitespace cannot be a env-var name anyway,
+/// and mistyping a DSN here is the common mistake worth a real explanation.
+fn looks_like_connection_string(s: &str) -> bool {
+    s.contains("://") || s.contains('=') || s.contains('@')
 }
 
 #[cfg(test)]
@@ -298,5 +319,40 @@ env = "STAGING_DATABASE_URL"
         let text = "version = 1\nfuture_knob = true\n[settings]\ninterval_seconds = 30\n";
         let cfg: TerminalConfig = toml::from_str(text).unwrap();
         assert_eq!(cfg.settings.interval_seconds, 30);
+    }
+
+    #[test]
+    fn connection_strings_get_guidance_and_are_never_echoed() {
+        let mut cfg = TerminalConfig::default();
+        // URL typed where the env-var NAME belongs — the common mistake.
+        let err = cfg
+            .add("prod", "postgres://alex:hunter2@db.example/app")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("connection string"), "{err}");
+        assert!(err.contains("export"), "tells the user the fix: {err}");
+        assert!(!err.contains("hunter2"), "password echoed: {err}");
+        assert!(!err.contains("db.example"), "input echoed: {err}");
+
+        // Keyword DSN as env value.
+        let err = cfg
+            .add("prod", "host=h password=sekret")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("connection string"), "{err}");
+        assert!(!err.contains("sekret"), "password echoed: {err}");
+
+        // URL typed as the database NAME.
+        let err = cfg
+            .add("postgres://alex:hunter2@h/db", "X_URL")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("connection string"), "{err}");
+        assert!(!err.contains("hunter2"), "password echoed: {err}");
+
+        // Plain invalid input is refused without being echoed either.
+        let err = cfg.add("prod", "NOT VALID pw=1").unwrap_err().to_string();
+        assert!(!err.contains("pw=1"), "{err}");
+        assert!(cfg.databases.is_empty());
     }
 }

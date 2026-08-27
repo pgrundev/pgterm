@@ -193,10 +193,10 @@ fn draw_popup(
 ) -> Vec<(Rect, Hit)> {
     let mut button_hits: Vec<(Rect, Hit)> = Vec::new();
     use crate::app::PopupField;
-    let [v] = Layout::vertical([Constraint::Length(12)])
+    let [v] = Layout::vertical([Constraint::Length(14)])
         .flex(Flex::Center)
         .areas(area);
-    let [rect] = Layout::horizontal([Constraint::Length(50)])
+    let [rect] = Layout::horizontal([Constraint::Length(56)])
         .flex(Flex::Center)
         .areas(v);
     f.render_widget(Clear, rect);
@@ -228,6 +228,11 @@ fn draw_popup(
             Span::styled(popup.env.clone(), field_style(PopupField::Env)),
             Span::raw(cursor(PopupField::Env)),
         ]),
+        Line::from(Span::styled(
+            "the NAME of an exported variable holding the URL —",
+            dim,
+        )),
+        Line::from(Span::styled("never the URL itself", dim)),
         Line::from(""),
     ];
     if popup.busy {
@@ -241,10 +246,20 @@ fn draw_popup(
                 msg.clone(),
                 Style::default().fg(Color::Green),
             ))),
-            Some(Err(e)) => lines.push(Line::from(Span::styled(
-                e.to_string(),
-                Style::default().fg(Color::Red),
-            ))),
+            Some(Err(e)) => {
+                // Validation and env problems are the user's input, not a
+                // subprocess failure — show the guidance without the
+                // error-kind prefix.
+                use crate::sanitize::ErrorKind;
+                let text = match e.kind {
+                    ErrorKind::Usage | ErrorKind::EnvMissing => e.message.clone(),
+                    _ => e.to_string(),
+                };
+                lines.push(Line::from(Span::styled(
+                    text,
+                    Style::default().fg(Color::Red),
+                )));
+            }
             None => lines.push(Line::from(vec![
                 Span::styled("[ Test ]", Style::default().fg(Color::Cyan)),
                 Span::raw("  Ctrl+T                 "),
@@ -261,17 +276,19 @@ fn draw_popup(
 
     let show_buttons = !popup.busy && popup.message.is_none();
     f.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Add Database "),
-        ),
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Add Database "),
+            ),
         rect,
     );
     if show_buttons {
-        // The action row is the 7th content line inside the border; the
-        // popup has a fixed 50-column layout so the offsets are stable.
-        let y = rect.y + 7;
+        // The action row is the 9th content line inside the border; the
+        // popup has a fixed layout so the offsets are stable.
+        let y = rect.y + 9;
         button_hits.push((Rect::new(rect.x + 1, y, 8, 1), Hit::PopupTest));
         button_hits.push((Rect::new(rect.x + 34, y, 7, 1), Hit::PopupAdd));
     }
