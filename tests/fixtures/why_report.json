@@ -1,0 +1,39 @@
+{
+ "why_schema_version": "1.0.0",
+ "database": "app",
+ "window_start": "2026-08-19T10:00:00Z",
+ "window_end": "2026-08-26T10:00:00Z",
+ "snapshots": 26,
+ "analyzed_queries": 140,
+ "analyzed_tables": 31,
+ "regressions_found": 1,
+ "chains": [
+  {
+   "symptom": {
+    "role": "symptom",
+    "text": "checkout query became 3.2x slower",
+    "at": "2026-08-25T14:00:00Z",
+    "before": 8.0,
+    "after": 26.0
+   },
+   "hops": [
+    {
+     "role": "mechanism",
+     "text": "table public.orders grew +18%"
+    },
+    {
+     "role": "mechanism",
+     "text": "sequential scans 0.1/s -> 50/s"
+    },
+    {
+     "role": "evidence",
+     "text": "matching index no longer observed"
+    }
+   ],
+   "confidence": 0.8
+  }
+ ],
+ "notes": [
+  "window truncated to the oldest stored snapshot"
+ ]
+}

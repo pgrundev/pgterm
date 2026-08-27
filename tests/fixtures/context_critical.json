@@ -1,0 +1,199 @@
+{
+ "schema_version": "1.2.0",
+ "collected_at": "2026-08-26T10:00:00Z",
+ "fingerprint": "fp-app-1",
+ "server": {
+  "version_num": 170004,
+  "version_text": "PostgreSQL 17.4 on aarch64-unknown-linux-gnu",
+  "database": "app",
+  "uptime_seconds": 864000,
+  "extensions": [
+   "pg_stat_statements"
+  ],
+  "capabilities": [],
+  "has_pg_monitor": true
+ },
+ "window": {
+  "sample_seconds": 1.0,
+  "stats_window_days": 31.2
+ },
+ "limits": {
+  "connections_used": 84,
+  "connections_max": 300,
+  "max_xid_age": 120000
+ },
+ "health": {
+  "connections": 84,
+  "cache_hit_ratio": 0.992,
+  "cache_blocks_sampled": 20000
+ },
+ "activity": {
+  "total": 84,
+  "active": 5,
+  "idle": 70,
+  "idle_in_transaction": 2,
+  "waiting": 0,
+  "by_state": {
+   "active": 5,
+   "idle": 70
+  },
+  "longest_xact_sec": 1.5,
+  "longest_active_sec": 0.4
+ },
+ "locks": {
+  "blocked_count": 3,
+  "chains": [
+   {
+    "blocked_pid": 4242,
+    "blocking_pids": [
+     4241
+    ],
+    "wait_event": "transactionid",
+    "wait_seconds": 42.0,
+    "blocked_query": "UPDATE orders SET status = $1 WHERE id = $2"
+   }
+  ]
+ },
+ "queries": {
+  "enabled": true,
+  "total_exec_ms": 8040000.0,
+  "top": [
+   {
+    "queryid": 101,
+    "query": "SELECT * FROM orders WHERE customer_id = $1",
+    "calls": 18201,
+    "total_ms": 7704000.0,
+    "mean_ms": 423.0,
+    "max_ms": 1200.0,
+    "rows": 18201,
+    "wal_bytes": 0
+   },
+   {
+    "queryid": 102,
+    "query": "SELECT * FROM events WHERE type = $1",
+    "calls": 7431,
+    "total_ms": 288000.0,
+    "mean_ms": 38.8,
+    "max_ms": 300.0,
+    "rows": 500000,
+    "wal_bytes": 0
+   }
+  ]
+ },
+ "tables": {
+  "db_size_bytes": 150000000000,
+  "top": [
+   {
+    "schema": "public",
+    "table": "events",
+    "total_bytes": 90194313216,
+    "live_tuples": 840000000,
+    "dead_tuples": 84000,
+    "dead_ratio": 0.0001,
+    "seq_scans": 12,
+    "index_scans": 99000,
+    "mods_since_analyze": 100,
+    "last_autovacuum": "2026-08-26T09:57:00Z"
+   },
+   {
+    "schema": "public",
+    "table": "orders",
+    "total_bytes": 45097156608,
+    "live_tuples": 180000000,
+    "dead_tuples": 90000,
+    "dead_ratio": 0.0005,
+    "seq_scans": 40,
+    "index_scans": 1800000,
+    "mods_since_analyze": 2000,
+    "last_autovacuum": "2026-08-26T08:00:00Z"
+   }
+  ]
+ },
+ "indexes": {
+  "total": 42,
+  "scanned": 42,
+  "unused": [
+   {
+    "schema": "public",
+    "table": "events",
+    "index": "idx_events_type",
+    "scans": 0,
+    "bytes": 12884901888,
+    "columns": [
+     "type"
+    ],
+    "method": "btree"
+   },
+   {
+    "schema": "public",
+    "table": "orders",
+    "index": "idx_orders_old",
+    "scans": 0,
+    "bytes": 9019431321,
+    "columns": [
+     "legacy_id"
+    ],
+    "method": "btree"
+   }
+  ]
+ },
+ "replication": {
+  "is_replica": false,
+  "replicas": [
+   {
+    "sync_state": "async",
+    "replay_lag_sec": 0.21,
+    "write_lag_bytes": 1024,
+    "flush_lag_bytes": 2048,
+    "replay_lag_bytes": 4096
+   }
+  ]
+ },
+ "findings": [
+  {
+   "id": "blocking_chains",
+   "severity": "critical",
+   "title": "3 queries blocked behind one writer",
+   "detail": "pid 4241 has held a row lock for 42s; 3 sessions are queued behind it.",
+   "evidence": [
+    "blocked 4242 <- blocking 4241 (42s)"
+   ],
+   "impact": {
+    "score": 80
+   },
+   "confidence": 0.9
+  },
+  {
+   "id": "unused_indexes",
+   "severity": "warn",
+   "title": "2 indexes with zero scans in the observed window",
+   "detail": "idx_events_type and idx_orders_old have not been scanned in 31 days.",
+   "evidence": [
+    "public.events.idx_events_type 12 GiB",
+    "public.orders.idx_orders_old 8.4 GiB"
+   ],
+   "remediation": "Run pgbot indexes for the graded correlation report before touching anything.",
+   "impact": {
+    "score": 40
+   },
+   "confidence": 0.7,
+   "caveats": [
+    "the stats window may not cover monthly batch jobs"
+   ]
+  },
+  {
+   "id": "query_slowdown",
+   "severity": "warn",
+   "title": "2 queries regressed vs baseline",
+   "detail": "checkout query mean 8ms -> 26ms; search query mean 12ms -> 19ms.",
+   "evidence": [
+    "q:101 mean_ms 8 -> 26",
+    "q:102 mean_ms 12 -> 19"
+   ],
+   "impact": {
+    "score": 55
+   },
+   "confidence": 0.8
+  }
+ ]
+}

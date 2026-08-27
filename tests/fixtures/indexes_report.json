@@ -1,0 +1,82 @@
+{
+ "fingerprint": "fp-app-1",
+ "cold_window": false,
+ "replication_active": false,
+ "stats_window_days": 31.2,
+ "indexes": [
+  {
+   "index": "idx_events_type",
+   "table": "events",
+   "schema": "public",
+   "columns": [
+    "type"
+   ],
+   "kind": "btree",
+   "is_unique": false,
+   "is_partial": false,
+   "is_expression": false,
+   "size_bytes": 12884901888,
+   "scans": 0,
+   "stats_window_days": 31.2,
+   "confidence": "needs_code_check",
+   "reason": "0 scans in 31 days, but the stats window may not cover monthly jobs",
+   "search_terms": [
+    "idx_events_type",
+    "events type"
+   ],
+   "instruction": "search the codebase for these terms",
+   "if_found": "keep the index",
+   "if_not_found": "drop candidate \u2014 verify with the safety guards first",
+   "inconclusive_if": "the window is shorter than your longest job cycle",
+   "do_not_drop": false
+  },
+  {
+   "index": "idx_orders_old",
+   "table": "orders",
+   "schema": "public",
+   "columns": [
+    "legacy_id"
+   ],
+   "kind": "btree",
+   "is_unique": false,
+   "is_partial": false,
+   "is_expression": false,
+   "size_bytes": 9019431321,
+   "scans": 0,
+   "stats_window_days": 31.2,
+   "confidence": "inconclusive",
+   "reason": "stats were reset 2 days ago \u2014 the window is too short to grade",
+   "do_not_drop": false
+  },
+  {
+   "index": "users_email_idx",
+   "table": "users",
+   "schema": "public",
+   "columns": [
+    "email"
+   ],
+   "kind": "btree",
+   "is_unique": true,
+   "is_partial": false,
+   "is_expression": false,
+   "size_bytes": 4402341478,
+   "scans": 18200000,
+   "stats_window_days": 31.2,
+   "confidence": "catalog_proven",
+   "reason": "18.2M scans \u2014 actively used",
+   "do_not_drop": true,
+   "safety": {
+    "blocking_caveats": [
+     {
+      "id": "unique-constraint",
+      "kind": "prohibition",
+      "action": "DROP INDEX",
+      "text": "enforces a uniqueness constraint",
+      "verify": null
+     }
+    ]
+   }
+  }
+ ],
+ "note": "grades are evidence-based; inconclusive means the observation window is too short"
+}

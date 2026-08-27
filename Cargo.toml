@@ -1,0 +1,21 @@
+[package]
+name = "pgterm"
+version = "0.1.0"
+edition = "2021"
+description = "htop for all your Postgres databases — a multi-database terminal UI powered by pgbot"
+license = "Apache-2.0"
+homepage = "https://pgbot.dev"
+
+[dependencies]
+anyhow = "1"
+crossterm = "0.29"
+dirs = "6"
+ratatui = { version = "0.30", features = ["crossterm_0_29"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time"] }
+toml = "1"
+
+[profile.release]
+strip = true
+lto = true
