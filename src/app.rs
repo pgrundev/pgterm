@@ -980,4 +980,200 @@ mod tests {
         let a = App::new(&cfg, None, false, Some("nope"));
         assert_eq!(a.selected, 0, "unknown name falls back to the first tab");
     }
+
+    fn popup_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        match LOCK.get_or_init(|| Mutex::new(())).lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    #[test]
+    fn popup_shortcut_keys_type_into_fields_not_the_app() {
+        let mut a = app(1);
+        a.update(key(KeyCode::Char('a')));
+        for c in ['1', '5', 'q', 'r'] {
+            a.update(key(KeyCode::Char(c)));
+        }
+        assert!(!a.should_quit);
+        assert_eq!(
+            a.dbs[0].view,
+            View::Inspect,
+            "digits typed, not view switches"
+        );
+        assert_eq!(a.popup.as_ref().unwrap().name, "15qr");
+    }
+
+    #[test]
+    fn popup_rejects_unset_env_and_duplicate_names_before_probing() {
+        let _g = popup_env_guard();
+        let mut a = app(1); // db0 exists
+        a.update(key(KeyCode::Char('a')));
+        {
+            let p = a.popup.as_mut().unwrap();
+            p.name = "db0".into();
+            p.env = "APP_TEST_URL_0".into();
+        }
+        let effects = a.popup_submit(true);
+        assert!(effects.is_empty());
+        let msg = a
+            .popup
+            .as_ref()
+            .unwrap()
+            .message
+            .clone()
+            .unwrap()
+            .unwrap_err();
+        assert!(msg.message.contains("already exists"), "{}", msg.message);
+
+        {
+            let p = a.popup.as_mut().unwrap();
+            p.name = "fresh".into();
+            p.env = "POPUP_UNSET_VAR".into();
+            p.message = None;
+        }
+        std::env::remove_var("POPUP_UNSET_VAR");
+        let effects = a.popup_submit(true);
+        assert!(effects.is_empty(), "no probe without a resolvable env var");
+        let msg = a
+            .popup
+            .as_ref()
+            .unwrap()
+            .message
+            .clone()
+            .unwrap()
+            .unwrap_err();
+        assert!(msg.message.contains("POPUP_UNSET_VAR"), "{}", msg.message);
+    }
+
+    #[test]
+    fn popup_add_flow_appends_a_monitored_database() {
+        let _g = popup_env_guard();
+        let dir = std::env::temp_dir().join(format!("pgterm-popup-add-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PGTERM_CONFIG", dir.join("config.toml"));
+        std::env::set_var("POPUP_ADD_URL", "postgres://u:pw@mode-healthy/db");
+
+        let mut a = app(1);
+        a.update(key(KeyCode::Char('a')));
+        {
+            let p = a.popup.as_mut().unwrap();
+            p.name = "staging".into();
+            p.env = "POPUP_ADD_URL".into();
+        }
+        let effects = a.popup_submit(true);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::SpawnProbe { save: true, .. }]
+        ));
+        assert!(a.popup.as_ref().unwrap().busy);
+
+        // Probe comes back OK → profile saved, tab appended and selected,
+        // monitor spawned immediately.
+        let effects = a.update(Action::ProbeFinished {
+            name: "staging".into(),
+            env: "POPUP_ADD_URL".into(),
+            save: true,
+            result: ok_ctx(HEALTHY),
+        });
+        assert!(a.popup.is_none());
+        assert_eq!(a.dbs.len(), 2);
+        assert_eq!(a.selected, 1);
+        assert_eq!(a.dbs[1].profile.env, "POPUP_ADD_URL");
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn {
+                db: 1,
+                kind: CmdKind::Monitor,
+                ..
+            }]
+        ));
+        let saved = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(saved.contains("staging"), "{saved}");
+        assert!(!saved.contains("postgres://"), "no DSN in config: {saved}");
+
+        std::env::remove_var("PGTERM_CONFIG");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn popup_test_mode_reports_without_saving() {
+        let _g = popup_env_guard();
+        let mut a = app(1);
+        a.update(key(KeyCode::Char('a')));
+        {
+            let p = a.popup.as_mut().unwrap();
+            p.busy = true;
+        }
+        a.update(Action::ProbeFinished {
+            name: "x".into(),
+            env: "Y".into(),
+            save: false,
+            result: ok_ctx(HEALTHY),
+        });
+        let p = a.popup.as_ref().expect("popup stays open after Test");
+        assert!(!p.busy);
+        let msg = p.message.clone().unwrap().unwrap();
+        assert!(msg.contains("PostgreSQL 17"), "{msg}");
+        assert_eq!(a.dbs.len(), 1, "Test never saves");
+    }
+
+    #[test]
+    fn probe_failure_shows_sanitized_error_in_popup() {
+        let _g = popup_env_guard();
+        let mut a = app(1);
+        a.update(key(KeyCode::Char('a')));
+        a.popup.as_mut().unwrap().busy = true;
+        a.update(Action::ProbeFinished {
+            name: "x".into(),
+            env: "Y".into(),
+            save: true,
+            result: Err(SafeError::new(
+                crate::sanitize::ErrorKind::ConnectionFailed,
+                "connect postgres://u:sekret@h/db: refused",
+                None,
+            )),
+        });
+        let msg = a
+            .popup
+            .as_ref()
+            .unwrap()
+            .message
+            .clone()
+            .unwrap()
+            .unwrap_err();
+        assert!(!msg.message.contains("sekret"), "{}", msg.message);
+        assert_eq!(a.dbs.len(), 1);
+    }
+
+    #[test]
+    fn mouse_clicks_dispatch_through_the_hitmap() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::layout::Rect;
+        let mut a = app(3);
+        a.hitmap = vec![
+            (Rect::new(0, 0, 10, 1), Hit::SelectDb(2)),
+            (Rect::new(20, 0, 10, 1), Hit::OpenAdd),
+            (Rect::new(0, 28, 11, 1), Hit::SetView(View::Tables)),
+        ];
+        let click = |x: u16, y: u16| {
+            Action::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        a.update(click(5, 0));
+        assert_eq!(a.selected, 2);
+        a.update(click(3, 28));
+        assert_eq!(a.dbs[2].view, View::Tables);
+        a.update(click(25, 0));
+        assert!(a.popup.is_some(), "clicking + Add DB opens the popup");
+        a.update(click(70, 15));
+        assert!(a.popup.is_some(), "a miss changes nothing");
+    }
 }
