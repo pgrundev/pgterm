@@ -431,11 +431,50 @@ impl App {
         }
     }
 
-    /// Command execution: parsing lands in Task 10; until then Enter clears.
+    /// Enter in the command bar: parse against the closed verb set. A parse
+    /// error keeps the input and focus so the user can fix it in place.
     fn submit_command(&mut self) -> Vec<Effect> {
-        self.cmdline.clear();
-        self.focus = Focus::Main;
-        Vec::new()
+        use crate::parser::{parse, UserCommand};
+        match parse(&self.cmdline) {
+            Err(msg) => {
+                self.cmd_error = Some(msg);
+                Vec::new()
+            }
+            Ok(cmd) => {
+                self.cmdline.clear();
+                self.cmd_error = None;
+                self.focus = Focus::Main;
+                match cmd {
+                    UserCommand::Inspect => self.set_view(View::Inspect),
+                    UserCommand::Queries => self.set_view(View::Queries),
+                    UserCommand::Indexes => self.set_view(View::Indexes),
+                    UserCommand::Tables => self.set_view(View::Tables),
+                    UserCommand::Why => self.set_view(View::Why),
+                    UserCommand::Refresh => self.refresh_selected(),
+                    UserCommand::Ask(q) => self.spawn_ask(q),
+                }
+            }
+        }
+    }
+
+    /// `ask <question>`: switches to the Ask view and runs `pgbot ask --yes`
+    /// with the question as one argv element. One ask per database at a time.
+    fn spawn_ask(&mut self, question: String) -> Vec<Effect> {
+        let selected = self.selected;
+        let Some(db) = self.dbs.get_mut(selected) else {
+            return Vec::new();
+        };
+        db.view = View::Ask;
+        if db.running.contains(&CmdKind::Ask) {
+            return Vec::new();
+        }
+        db.ask_output = None;
+        db.running.insert(CmdKind::Ask);
+        vec![Effect::Spawn {
+            db: selected,
+            cmd: PgbotCommand::Ask(question),
+            kind: CmdKind::Ask,
+        }]
     }
 
     fn handle_popup_key(&mut self, key: KeyEvent) -> Vec<Effect> {

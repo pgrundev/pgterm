@@ -418,4 +418,147 @@ mod tests {
         db.health = HealthStatus::Checking;
         assert_eq!(tab_glyph(db).0, "◌");
     }
+
+    const INDEXES_REPORT: &str = include_str!("../tests/fixtures/indexes_report.json");
+    const WHY_REPORT: &str = include_str!("../tests/fixtures/why_report.json");
+
+    fn press(app: &mut App, code: crossterm::event::KeyCode) -> Vec<crate::action::Effect> {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        app.update(Action::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, crossterm::event::KeyCode::Char(c));
+        }
+    }
+
+    #[test]
+    fn queries_and_tables_views_render_the_context() {
+        use crossterm::event::KeyCode;
+        let mut app = app_with(&["prod"]);
+        feed(&mut app, 0, WARN);
+        press(&mut app, KeyCode::Char('2'));
+        let s = render(&mut app, 110, 32);
+        assert!(s.contains("QUERIES"), "{s}");
+        assert!(s.contains("18.2k"), "calls column: {s}");
+        assert!(s.contains("423 ms"), "mean column: {s}");
+        assert!(
+            s.contains("SELECT * FROM orders"),
+            "scrubbed text passes through: {s}"
+        );
+
+        press(&mut app, KeyCode::Char('4'));
+        let s = render(&mut app, 110, 32);
+        assert!(s.contains("TABLES"), "{s}");
+        assert!(s.contains("84 GiB"), "{s}");
+        assert!(s.contains("public.events"), "{s}");
+    }
+
+    #[test]
+    fn indexes_view_renders_pgbots_grading_verbatim() {
+        let mut app = app_with(&["prod"]);
+        app.update(Action::CheckFinished {
+            db: 0,
+            kind: CmdKind::Indexes,
+            result: Ok(StoredResult::Indexes(Box::new(
+                crate::model::IndexesReport::decode(INDEXES_REPORT).unwrap(),
+            ))),
+        });
+        app.dbs[0].view = View::Indexes;
+        let s = render(&mut app, 130, 32);
+        assert!(s.contains("CHECK CODE"), "{s}");
+        assert!(s.contains("INCONCLUSIVE"), "{s}");
+        assert!(s.contains("DO NOT DROP"), "{s}");
+        assert!(s.contains("idx_events_type"), "{s}");
+        assert!(!s.contains("drop it"), "never invents advice: {s}");
+    }
+
+    #[test]
+    fn why_view_renders_chains_and_confidence() {
+        let mut app = app_with(&["prod"]);
+        app.update(Action::CheckFinished {
+            db: 0,
+            kind: CmdKind::Why,
+            result: Ok(StoredResult::Why(Box::new(
+                crate::model::WhyReport::decode(WHY_REPORT).unwrap(),
+            ))),
+        });
+        app.dbs[0].view = View::Why;
+        let s = render(&mut app, 110, 32);
+        assert!(s.contains("checkout query became 3.2x slower"), "{s}");
+        assert!(s.contains("8 ms → 26 ms   +225%"), "{s}");
+        assert!(s.contains("table public.orders grew +18%"), "{s}");
+        assert!(s.contains("Confidence: 80%"), "{s}");
+    }
+
+    #[test]
+    fn inspect_view_shows_dashboard_plus_findings_report() {
+        let mut app = app_with(&["prod"]);
+        feed(&mut app, 0, WARN);
+        let s = render(&mut app, 110, 36);
+        assert!(s.contains("DATABASE HEALTH"), "{s}");
+        assert!(s.contains("WARNING"), "{s}");
+        assert!(s.contains("indexes with zero scans"), "{s}");
+        assert!(
+            s.contains("but: the stats window"),
+            "caveats render inline: {s}"
+        );
+    }
+
+    #[test]
+    fn command_bar_runs_whitelisted_verbs_and_rejects_the_rest() {
+        use crossterm::event::KeyCode;
+        let mut app = app_with(&["prod"]);
+        feed(&mut app, 0, HEALTHY);
+        press(&mut app, KeyCode::Char('/'));
+        type_str(&mut app, "indexes");
+        let effects = press(&mut app, KeyCode::Enter);
+        assert_eq!(app.dbs[0].view, View::Indexes);
+        assert_eq!(effects.len(), 1, "indexes fetch spawned");
+        assert_eq!(app.focus, Focus::Main);
+        assert!(app.cmdline.is_empty());
+
+        press(&mut app, KeyCode::Char('/'));
+        type_str(&mut app, "rm -rf /");
+        let effects = press(&mut app, KeyCode::Enter);
+        assert!(effects.is_empty(), "rejected input must spawn nothing");
+        assert!(app.cmd_error.is_some());
+        assert_eq!(
+            app.focus,
+            Focus::CommandBar,
+            "stay in the bar to fix the typo"
+        );
+        assert_eq!(app.cmdline, "rm -rf /", "input preserved for editing");
+        let s = render(&mut app, 110, 32);
+        assert!(s.contains("unknown command"), "{s}");
+    }
+
+    #[test]
+    fn ask_command_switches_view_and_stores_output() {
+        use crossterm::event::KeyCode;
+        let mut app = app_with(&["prod"]);
+        feed(&mut app, 0, HEALTHY);
+        press(&mut app, KeyCode::Char('/'));
+        type_str(&mut app, "ask why is checkout slow?");
+        let effects = press(&mut app, KeyCode::Enter);
+        assert_eq!(app.dbs[0].view, View::Ask);
+        assert!(matches!(
+            effects.as_slice(),
+            [crate::action::Effect::Spawn {
+                cmd: crate::runner::PgbotCommand::Ask(q),
+                kind: CmdKind::Ask,
+                ..
+            }] if q == "why is checkout slow?"
+        ));
+        app.update(Action::CheckFinished {
+            db: 0,
+            kind: CmdKind::Ask,
+            result: Ok(StoredResult::Text(
+                "The checkout query lost its index.".into(),
+            )),
+        });
+        let s = render(&mut app, 110, 32);
+        assert!(s.contains("The checkout query lost its index."), "{s}");
+    }
 }

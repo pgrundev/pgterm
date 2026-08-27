@@ -172,3 +172,38 @@ mod tests {
         assert!(!is_too_small(200, 60));
     }
 }
+
+pub fn draw_ask_hint(f: &mut Frame, area: Rect, db: &DbState) {
+    if db.running.contains(&crate::action::CmdKind::Ask) {
+        centered(
+            f,
+            area,
+            vec![
+                Line::from(Span::styled(
+                    "◌ asking...",
+                    Style::default().fg(Color::Cyan),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "pgbot gathers findings and sends them to your configured AI",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ],
+        );
+        return;
+    }
+    centered(
+        f,
+        area,
+        vec![
+            Line::from("Ask a question about this database:"),
+            Line::from(""),
+            Line::from("  / ask why did checkout get slower?"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "needs OPENAI_API_KEY or GEMINI_API_KEY — pgbot sends its findings there",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ],
+    );
+}
