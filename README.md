@@ -48,7 +48,7 @@ configuration is untouched.
 ## Install
 
 ```bash
-curl -sSf https://pgterm.dev/install.sh | sh
+curl -fsSL https://pgterm.dev/install.sh | sh
 ```
 
 Downloads the latest release for your platform (linux/macOS, amd64/arm64),

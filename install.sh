@@ -1,7 +1,7 @@
 #!/bin/sh
 # pgterm installer — https://pgterm.dev/install.sh
 #
-#   curl -sSf https://pgterm.dev/install.sh | sh
+#   curl -fsSL https://pgterm.dev/install.sh | sh
 #
 # Environment:
 #   PGTERM_VERSION      version to install (default: latest release)
