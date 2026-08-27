@@ -32,6 +32,19 @@ Each tab is one PostgreSQL database. pgterm checks them all in the
 background and flags the tab that needs attention — without stealing focus
 from the one you're looking at.
 
+## Try it in 10 seconds (no database needed)
+
+```bash
+cargo build --release
+./demo/run.sh
+```
+
+Three pretend databases — healthy, warnings, and a blocked-locks incident —
+served by a fake pgbot from the test fixtures. Everything works: tabs,
+views 1–5, `r`, the command bar (`/ ask why did checkout get slower?`).
+The demo keeps its config under `$TMPDIR/pgterm-demo`, so your real
+configuration is untouched.
+
 ## Quickstart
 
 pgterm drives [pgbot](https://github.com/pgrundev/pgbot), so install that
