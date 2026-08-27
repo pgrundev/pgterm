@@ -216,22 +216,35 @@ fn draw_popup(
             ""
         }
     };
+    // Empty fields show a worked example instead of a blank line; it
+    // disappears at the first typed character.
+    let placeholder = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::ITALIC);
+    let field_line = |field: PopupField, value: String, example: &'static str| {
+        if value.is_empty() {
+            Line::from(vec![
+                Span::raw(cursor(field)),
+                Span::styled(example, placeholder),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(value, field_style(field)),
+                Span::raw(cursor(field)),
+            ])
+        }
+    };
     let mut lines = vec![
         Line::from(Span::styled("Name", dim)),
-        Line::from(vec![
-            Span::styled(popup.name.clone(), field_style(PopupField::Name)),
-            Span::raw(cursor(PopupField::Name)),
-        ]),
+        field_line(PopupField::Name, popup.name.clone(), "production"),
         Line::from(""),
         Line::from(Span::styled("Connection", dim)),
-        Line::from(vec![
-            Span::styled(
-                // A pasted URL is a secret: mask it on screen immediately.
-                crate::sanitize::redact(&popup.env, None),
-                field_style(PopupField::Env),
-            ),
-            Span::raw(cursor(PopupField::Env)),
-        ]),
+        field_line(
+            PopupField::Env,
+            // A pasted URL is a secret: mask it on screen immediately.
+            crate::sanitize::redact(&popup.env, None),
+            "PROD_DATABASE_URL  ·  or paste postgres://...",
+        ),
         Line::from(Span::styled(
             "a variable name (saved to config), or paste a URL",
             dim,
@@ -604,5 +617,30 @@ mod tests {
             s.contains("session-only"),
             "the hint explains the paste path: {s}"
         );
+    }
+
+    #[test]
+    fn empty_popup_fields_show_worked_examples() {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        let mut app = app_with(&["prod"]);
+        feed(&mut app, 0, HEALTHY);
+        app.update(Action::Key(KeyEvent::new(
+            crossterm::event::KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        )));
+        let s = render(&mut app, 100, 30);
+        assert!(s.contains("production"), "name example: {s}");
+        assert!(s.contains("PROD_DATABASE_URL"), "connection example: {s}");
+        assert!(s.contains("or paste postgres://"), "{s}");
+
+        // Typing replaces the example.
+        for c in "billing".chars() {
+            app.update(Action::Key(KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        let s = render(&mut app, 100, 30);
+        assert!(s.contains("billing"), "{s}");
     }
 }
