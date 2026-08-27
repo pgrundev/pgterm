@@ -48,19 +48,21 @@ configuration is untouched.
 ## Install
 
 ```bash
-curl -fsSL https://pgterm.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/pgrundev/pgterm/main/install.sh | sh
 ```
 
 Downloads the latest release for your platform (linux/macOS, amd64/arm64),
 verifies its checksum, and installs to `/usr/local/bin` (override with
-`PGTERM_INSTALL_DIR`). Or build from source: `cargo build --release`.
+`PGTERM_INSTALL_DIR`). `https://pgterm.dev/install.sh` works too (it
+redirects here — keep the `-L` flag). Or build from source:
+`cargo build --release`.
 
 ## Quickstart
 
 pgterm drives [pgbot](https://github.com/pgrundev/pgbot), so install both:
 
 ```bash
-curl -fsSL https://pgterm.dev/install.sh | sh   # pgterm
+curl -fsSL https://raw.githubusercontent.com/pgrundev/pgterm/main/install.sh | sh   # pgterm
 curl -fsSL https://pgbot.dev/install | sh       # pgbot (the diagnostic engine)
 ```
 
