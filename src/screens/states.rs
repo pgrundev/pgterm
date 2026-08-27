@@ -160,18 +160,6 @@ pub fn draw_empty_view(f: &mut Frame, area: Rect, db: &DbState) {
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn too_small_threshold_is_80_by_24() {
-        assert!(is_too_small(79, 24));
-        assert!(is_too_small(80, 23));
-        assert!(!is_too_small(80, 24));
-        assert!(!is_too_small(200, 60));
-    }
-}
 
 pub fn draw_ask_hint(f: &mut Frame, area: Rect, db: &DbState) {
     if db.running.contains(&crate::action::CmdKind::Ask) {
@@ -206,4 +194,17 @@ pub fn draw_ask_hint(f: &mut Frame, area: Rect, db: &DbState) {
             )),
         ],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn too_small_threshold_is_80_by_24() {
+        assert!(is_too_small(79, 24));
+        assert!(is_too_small(80, 23));
+        assert!(!is_too_small(80, 24));
+        assert!(!is_too_small(200, 60));
+    }
 }

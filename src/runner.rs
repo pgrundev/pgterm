@@ -155,7 +155,7 @@ pub async fn run_pgbot(
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     match output.status.code() {
-        Some(code @ (0 | 1 | 2)) => Ok(RunOutcome {
+        Some(code @ 0..=2) => Ok(RunOutcome {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             exit: code,
         }),

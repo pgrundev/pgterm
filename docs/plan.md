@@ -1,6 +1,6 @@
 # pgterm Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Ship pgterm — a standalone multi-database Ratatui TUI that orchestrates the pgbot CLI for diagnostics, with one-command database onboarding and background health monitoring.
 
@@ -10,7 +10,7 @@
 
 **Spec:** `docs/design.md`.
 
-**Status (2026-08-26):** Tasks 1–7 are DONE (originally built inside the pgbot repo as `pgbot-terminal`, then extracted here as the standalone `pgterm` — the pgbot repo was left untouched). 65 tests green: scaffold; config; sanitizer; runner + fake pgbot; models + health; CLI add/list/remove acceptance. Remaining: Tasks 8–12 below.
+**Status (2026-08-26):** ALL TASKS DONE. Built as `pgbot-terminal` inside the pgbot repo (Tasks 1–7), extracted here as standalone `pgterm`, then Tasks 8–12 completed in this repo: app core + bounded monitoring, TUI shell, all five views + strict command bar, popup + mouse, CI/release workflows. 106 tests green, clippy clean.
 
 ## Global Constraints
 
@@ -48,15 +48,15 @@ pub async fn run_effect(pgbot_bin, profile_env/name, effect, sem: Arc<Semaphore>
 ```
 Rules encoded in `update`: MonitorTick spawns Monitor for every db not already running it; CheckFinished(Ok(Ctx)) sets health via `health::overall`, stores ctx, clears error, stamps last_ok/last_checked, sets `attention` on non-selected dbs that turned Warning/Critical/Unavailable (cleared on select); Err ⇒ health Unavailable only for Monitor/Inspect kinds (view kinds keep health, set error); per-db state survives tab switches; Refresh/SetView dedupe against `running`; view→command mapping Inspect/Queries/Tables→InspectFull, Indexes→Indexes, Why→Why.
 
-- [ ] Unit tests: quit, tab cycling wraps, attention set/cleared, refresh-while-running no-ops, view mapping.
-- [ ] Integration `tests/monitor.rs`: 3 dbs (fake modes healthy/warn/refuse via distinct env vars); one sweep through real `run_pgbot` under `Semaphore(2)`; assert A Healthy / B Warning / C Unavailable (sanitized error), state independence, dedupe, peak concurrency ≤ 2 (fake writes a running-marker count with FAKE_PGBOT_DELAY).
-- [ ] Commit `feat: event/action core with bounded concurrent monitoring`.
+- [x] Unit tests: quit, tab cycling wraps, attention set/cleared, refresh-while-running no-ops, view mapping.
+- [x] Integration `tests/monitor.rs`: 3 dbs (fake modes healthy/warn/refuse via distinct env vars); one sweep through real `run_pgbot` under `Semaphore(2)`; assert A Healthy / B Warning / C Unavailable (sanitized error), state independence, dedupe, peak concurrency ≤ 2 (fake writes a running-marker count with FAKE_PGBOT_DELAY).
+- [x] Commit `feat: event/action core with bounded concurrent monitoring`.
 
 ### Task 9: TUI shell — tabs, health screen, states, help, resize
 
 Files: `src/ui.rs`, `src/event.rs`, `src/screens/{mod,health,states}.rs`; rewrite `main.rs` TUI entry (async event loop: mpsc<Action>, crossterm read thread, monitor interval task, draw ≤30fps, ratatui init/restore).
 Layout: tabs row (glyphs ● ! ○ ◌, selected reversed, `+ Add DB`), body, shortcut row, command bar. Health screen: `last check: 12s ago`, `DATABASE HEALTH  94 / 100`, seven category rows (status textual OK/WARN/FAIL), summary line, unmapped-findings note. States: first-run welcome, <80×24 too-small, checking-with-no-cache, UNAVAILABLE with retry. Help overlay (`?`). Hitmap recorded during draw.
-- [ ] Unit tests for pure pieces (glyph per status, age formatting, too-small predicate). Manual smoke with fake pgbot. Commit.
+- [x] Unit tests for pure pieces (glyph per status, age formatting, too-small predicate). Manual smoke with fake pgbot. Commit.
 
 ### Task 10: views + command bar + parser
 
@@ -64,17 +64,17 @@ Files: `src/parser.rs`, `src/screens/{inspect,queries,indexes,tables,why,ask}.rs
 Parser (tests FIRST — security property): closed verb set inspect/queries/indexes/tables/why/refresh + `ask <text>`; rejects ``, `rm -rf /`, `bash`, `psql`, `DROP DATABASE x`, `SELECT 1`, `inspect; rm -rf /`, `$(whoami)`, `history`.
 Screens render cached StoredResults: Inspect (findings grouped by severity, j/k selection, detail pane with evidence/remediation/caveats, suppressed dimmed); Queries (TOTAL/SHARE/CALLS/MEAN/QUERY from ctx.queries.top, pgss-off state); Tables (SIZE/ROWS/DEAD%/SEQ/IDX/TABLE); Indexes (from IndexesReport verbatim: confidence column, DO NOT DROP flag, note footer); Why (chains: symptom, before→after ×factor, hops, Confidence %, zero-snapshot state); Ask (scrolled text).
 Keys: 1-5 SetView (+spawn when no cache), `/` focus bar (Esc/Enter/Backspace; typed chars to input), parse errors inline.
-- [ ] Commit `feat: diagnostic views and strict command bar`.
+- [x] Commit `feat: diagnostic views and strict command bar`.
 
 ### Task 11: mouse + add-database popup
 
 Files: `src/screens/addpopup.rs`; mouse capture on/off with init/restore; hitmap dispatch (tabs, + Add DB, shortcut row, popup buttons).
 Popup: Name + Env fields (Tab switches, Esc cancels, typed chars to focused field), [ Test ] probes, [ Add ] probes then saves via config and appends a DbState + immediate monitor spawn; errors sanitized; duplicate names surface the config error; env values never rendered.
-- [ ] Unit tests: field routing, shortcuts inert while popup open, successful add appends without disturbing others. Commit.
+- [x] Unit tests: field routing, shortcuts inert while popup open, successful add appends without disturbing others. Commit.
 
 ### Task 12: repo polish — CI, release, README
 
 - `.github/workflows/ci.yml`: fmt --check, clippy -D warnings, cargo test on ubuntu-latest + macos-latest.
 - `.github/workflows/release.yml` on `v*` tags: native matrix — ubuntu-latest (x86_64-unknown-linux-musl), ubuntu-24.04-arm (aarch64-unknown-linux-musl), macos-latest (aarch64-apple-darwin + x86_64-apple-darwin via rustup target add); `cargo build --release --locked`; tarballs `pgterm_<ver>_<os>_<arch>.tar.gz` + sha256 checksums; attach to GitHub release.
 - README: what/why, install (release tarball, `cargo install --path .`), quickstart (`pgterm add prod` → `pgterm`), key table, config format, pgbot requirement, security posture (env-name-only config, no write SQL), screenshot placeholder.
-- [ ] Commit `chore: CI, release workflow, README`.
+- [x] Commit `chore: CI, release workflow, README`.

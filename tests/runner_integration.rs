@@ -1,5 +1,8 @@
 //! Runner behavior against a deterministic fake pgbot — no real PostgreSQL.
 #![cfg(unix)]
+// The env-mutation lock intentionally spans awaits: the pgbot child reads
+// the vars we set, so they must stay stable for the whole run.
+#![allow(clippy::await_holding_lock)]
 
 mod common;
 
