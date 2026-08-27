@@ -4,7 +4,7 @@ version = "0.1.1"
 edition = "2021"
 description = "htop for all your Postgres databases — a multi-database terminal UI powered by pgbot"
 license = "Apache-2.0"
-homepage = "https://pgbot.dev"
+homepage = "https://pgterm.dev"
 
 [dependencies]
 anyhow = "1"
