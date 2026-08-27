@@ -102,7 +102,7 @@ persisted.
 ```
 Tab / Shift+Tab    switch database          /    command bar
 1..5               inspect · queries ·      r    refresh
-                   indexes · tables · why   a    add database
+  ← / →            indexes · tables · why   a    add database
 ?                  help                     q    quit
 ```
 

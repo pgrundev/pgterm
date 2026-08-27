@@ -155,6 +155,7 @@ VIEWS
 3                  indexes
 4                  tables
 5                  why
+Left / Right       previous / next view
 
 COMMANDS
 /                  command input

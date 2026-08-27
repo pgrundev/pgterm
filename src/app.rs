@@ -392,6 +392,8 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('r') => self.refresh_selected(),
+            KeyCode::Left => self.cycle_view(-1),
+            KeyCode::Right => self.cycle_view(1),
             KeyCode::Up | KeyCode::Char('k') => {
                 self.scroll_by(-1);
                 Vec::new()
@@ -632,6 +634,21 @@ impl App {
             cmd,
             kind,
         }]
+    }
+
+    /// ←/→: step through the numbered views in shortcut-row order, wrapping
+    /// at the ends. From the (unnumbered) Ask view either arrow returns to
+    /// Inspect.
+    fn cycle_view(&mut self, dir: i64) -> Vec<Effect> {
+        let Some(db) = self.dbs.get(self.selected) else {
+            return Vec::new();
+        };
+        let views: [View; 5] = View::NUMBERED.map(|(_, v, _)| v);
+        let next = match views.iter().position(|v| *v == db.view) {
+            Some(i) => views[(i as i64 + dir).rem_euclid(views.len() as i64) as usize],
+            None => views[0],
+        };
+        self.set_view(next)
     }
 
     /// `r`: rerun the selected database's current view. Never duplicates an
@@ -1175,5 +1192,47 @@ mod tests {
         assert!(a.popup.is_some(), "clicking + Add DB opens the popup");
         a.update(click(70, 15));
         assert!(a.popup.is_some(), "a miss changes nothing");
+    }
+
+    #[test]
+    fn arrow_keys_cycle_the_numbered_views_and_wrap() {
+        let mut a = app(1);
+        a.update(Action::CheckFinished {
+            db: 0,
+            kind: CmdKind::Monitor,
+            result: ok_ctx(HEALTHY),
+        });
+        assert_eq!(a.dbs[0].view, View::Inspect);
+        press_code(&mut a, KeyCode::Right);
+        assert_eq!(a.dbs[0].view, View::Queries);
+        press_code(&mut a, KeyCode::Right);
+        assert_eq!(a.dbs[0].view, View::Indexes);
+        press_code(&mut a, KeyCode::Left);
+        press_code(&mut a, KeyCode::Left);
+        assert_eq!(a.dbs[0].view, View::Inspect);
+        press_code(&mut a, KeyCode::Left);
+        assert_eq!(a.dbs[0].view, View::Why, "Left from Inspect wraps to Why");
+        press_code(&mut a, KeyCode::Right);
+        assert_eq!(a.dbs[0].view, View::Inspect, "Right from Why wraps back");
+
+        // Stepping onto an unfetched view spawns its job, same as 1-5 keys.
+        let effects = a.update(key(KeyCode::Right));
+        assert_eq!(a.dbs[0].view, View::Queries);
+        assert!(effects.is_empty(), "Context is cached — no refetch");
+        press_code(&mut a, KeyCode::Right);
+        let db = &a.dbs[0];
+        assert!(
+            db.running.contains(&CmdKind::Indexes),
+            "Indexes fetch spawned"
+        );
+
+        // From Ask (unnumbered), either arrow lands on Inspect.
+        a.dbs[0].view = View::Ask;
+        press_code(&mut a, KeyCode::Left);
+        assert_eq!(a.dbs[0].view, View::Inspect);
+    }
+
+    fn press_code(a: &mut App, code: KeyCode) {
+        a.update(key(code));
     }
 }

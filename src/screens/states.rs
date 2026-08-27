@@ -160,7 +160,6 @@ pub fn draw_empty_view(f: &mut Frame, area: Rect, db: &DbState) {
     );
 }
 
-
 pub fn draw_ask_hint(f: &mut Frame, area: Rect, db: &DbState) {
     if db.running.contains(&crate::action::CmdKind::Ask) {
         centered(
