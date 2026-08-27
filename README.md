@@ -78,6 +78,10 @@ persisted.
 - The config (`~/.config/pgterm/config.toml`) stores **environment-variable
   names, never connection strings**. No password ever touches disk, logs, or
   the screen; every error is scrubbed of credentials.
+- In the add-database popup you may also paste a `postgres://` URL directly:
+  it is masked on screen, kept **in memory for that session only**, and never
+  written anywhere — the tab disappears when pgterm exits. Use an env-var
+  reference for databases you want to keep.
 - Connection strings reach pgbot through the child process **environment,
   never argv** — nothing shows up in `ps` or shell history.
 - Strictly read-only: pgterm runs only whitelisted pgbot diagnostics. There

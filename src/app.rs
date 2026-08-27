@@ -16,7 +16,7 @@ use crate::action::{Action, CmdKind, Effect, Hit, StoredResult, View};
 use crate::config::{DatabaseProfile, TerminalConfig};
 use crate::health::{self, HealthStatus};
 use crate::model::{Context, IndexesReport, WhyReport};
-use crate::runner::{self, PgbotCommand, RunOutcome};
+use crate::runner::{self, ConnSource, PgbotCommand, RunOutcome};
 use crate::sanitize::SafeError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +62,9 @@ impl Default for AddPopup {
 #[derive(Debug)]
 pub struct DbState {
     pub profile: DatabaseProfile,
+    /// Where the DSN comes from. Env profiles persist in config; Session
+    /// sources exist only in this process.
+    pub source: ConnSource,
     pub health: HealthStatus,
     pub last_ok: Option<Instant>,
     pub last_checked: Option<Instant>,
@@ -80,8 +83,10 @@ pub struct DbState {
 
 impl DbState {
     pub fn new(profile: DatabaseProfile) -> Self {
+        let source = ConnSource::Env(profile.env.clone());
         DbState {
             profile,
+            source,
             health: HealthStatus::Checking,
             last_ok: None,
             last_checked: None,
@@ -95,6 +100,16 @@ impl DbState {
             attention: false,
             scroll: HashMap::new(),
         }
+    }
+
+    /// A tab backed by a pasted URL: never persisted, gone on exit.
+    pub fn session(name: &str, url: String) -> Self {
+        let mut db = DbState::new(DatabaseProfile {
+            name: name.to_string(),
+            env: String::new(),
+        });
+        db.source = ConnSource::Session(url);
+        db
     }
 
     pub fn has_data(&self, view: View) -> bool {
@@ -202,10 +217,14 @@ impl App {
             }
             Action::ProbeFinished {
                 name,
-                env,
+                source,
                 save,
                 result,
-            } => self.on_probe_finished(&name, &env, save, result),
+            } => self.on_probe_finished(&name, source, save, result),
+            Action::Paste(text) => {
+                self.handle_paste(&text);
+                Vec::new()
+            }
             Action::Key(key) => self.handle_key(key),
             Action::Mouse(m) => self.handle_mouse(m),
         }
@@ -284,7 +303,7 @@ impl App {
     fn on_probe_finished(
         &mut self,
         name: &str,
-        env: &str,
+        source: ConnSource,
         save: bool,
         result: Result<StoredResult, SafeError>,
     ) -> Vec<Effect> {
@@ -303,7 +322,23 @@ impl App {
                     popup.message = Some(Ok(format!("✓ {version} — connection successful")));
                     return Vec::new();
                 }
-                // Persist through the same validated path as the CLI.
+                if let ConnSource::Session(url) = source {
+                    // Pasted URL: memory only. The config file is not touched,
+                    // so the tab lives exactly as long as this process.
+                    self.popup = None;
+                    self.focus = Focus::Main;
+                    self.dbs.push(DbState::session(name, url));
+                    let idx = self.dbs.len() - 1;
+                    self.selected = idx;
+                    self.dbs[idx].running.insert(CmdKind::Monitor);
+                    return vec![Effect::Spawn {
+                        db: idx,
+                        cmd: PgbotCommand::Monitor,
+                        kind: CmdKind::Monitor,
+                    }];
+                }
+                // Env-var reference: persist through the same validated path
+                // as the CLI.
                 let mut cfg = match TerminalConfig::load() {
                     Ok(c) => c,
                     Err(e) => {
@@ -315,7 +350,11 @@ impl App {
                         return Vec::new();
                     }
                 };
-                if let Err(e) = cfg.add(name, env).and_then(|()| cfg.save()) {
+                let env_name = match &source {
+                    ConnSource::Env(n) => n.clone(),
+                    ConnSource::Session(_) => unreachable!("handled above"),
+                };
+                if let Err(e) = cfg.add(name, &env_name).and_then(|()| cfg.save()) {
                     popup.message = Some(Err(SafeError::new(
                         crate::sanitize::ErrorKind::BadOutput,
                         &format!("{e:#}"),
@@ -327,7 +366,7 @@ impl App {
                 self.focus = Focus::Main;
                 self.dbs.push(DbState::new(DatabaseProfile {
                     name: name.to_string(),
-                    env: env.to_string(),
+                    env: env_name,
                 }));
                 let idx = self.dbs.len() - 1;
                 self.selected = idx;
@@ -529,8 +568,29 @@ impl App {
             return Vec::new();
         }
         let name = popup.name.trim().to_string();
-        let env = popup.env.trim().to_string();
-        // Same validation the CLI applies, before any subprocess runs.
+        let conn = popup.env.trim().to_string();
+
+        // A pasted URL becomes a session-only source: validated name, no
+        // config involvement, secret stays in memory.
+        if conn.contains("://") || conn.contains('=') {
+            if let Err(e) = validate_session_name(&name, &self.dbs) {
+                popup.message = Some(Err(SafeError::new(
+                    crate::sanitize::ErrorKind::Usage,
+                    &e,
+                    Some(&conn),
+                )));
+                return Vec::new();
+            }
+            popup.busy = true;
+            popup.message = None;
+            return vec![Effect::SpawnProbe {
+                name,
+                source: ConnSource::Session(conn),
+                save,
+            }];
+        }
+
+        // Otherwise it is an env-var reference — same validation as the CLI.
         let mut probe_cfg = TerminalConfig::load().unwrap_or_default();
         for d in &self.dbs {
             // The in-memory tab list is the truth the user sees; a name that
@@ -539,7 +599,7 @@ impl App {
                 let _ = probe_cfg.add(&d.profile.name, &d.profile.env);
             }
         }
-        if let Err(e) = probe_cfg.add(&name, &env) {
+        if let Err(e) = probe_cfg.add(&name, &conn) {
             popup.message = Some(Err(SafeError::new(
                 crate::sanitize::ErrorKind::Usage,
                 &e.to_string(),
@@ -547,22 +607,32 @@ impl App {
             )));
             return Vec::new();
         }
-        if std::env::var(&env)
-            .map(|v| v.trim().is_empty())
-            .unwrap_or(true)
-        {
-            popup.message = Some(Err(SafeError::new(
-                crate::sanitize::ErrorKind::EnvMissing,
-                &format!(
-                    "Environment variable {env} is not set — export it in the shell that launches pgterm, then restart."
-                ),
-                None,
-            )));
+        let source = ConnSource::Env(conn);
+        if let Err(e) = source.resolve() {
+            popup.message = Some(Err(e));
             return Vec::new();
         }
         popup.busy = true;
         popup.message = None;
-        vec![Effect::SpawnProbe { name, env, save }]
+        vec![Effect::SpawnProbe { name, source, save }]
+    }
+
+    /// Pasted text goes to whichever input has focus; control characters are
+    /// stripped so a trailing newline cannot fire Enter.
+    fn handle_paste(&mut self, text: &str) {
+        let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+        match self.focus {
+            Focus::CommandBar => self.cmdline.push_str(&clean),
+            Focus::Popup => {
+                if let Some(popup) = self.popup.as_mut() {
+                    match popup.field {
+                        PopupField::Name => popup.name.push_str(clean.trim()),
+                        PopupField::Env => popup.env.push_str(clean.trim()),
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn handle_mouse(&mut self, m: MouseEvent) -> Vec<Effect> {
@@ -683,11 +753,30 @@ impl App {
     }
 }
 
+/// Name rules for a session tab: same shape as config names, unique against
+/// the live tab list (the config is irrelevant — nothing is written).
+fn validate_session_name(name: &str, dbs: &[DbState]) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("database name is empty".into());
+    }
+    if name.len() > 64
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err("database name may only contain letters, digits, '.', '_' and '-'".into());
+    }
+    if dbs.iter().any(|d| d.profile.name == name) {
+        return Err(format!("database \"{name}\" already exists"));
+    }
+    Ok(())
+}
+
 /// Performs one Spawn effect: waits on the concurrency semaphore, runs pgbot,
 /// decodes by command, and returns the Action to feed back into `update`.
 pub async fn run_effect(
     pgbot_bin: PathBuf,
-    env_var: String,
+    source: ConnSource,
     db: usize,
     cmd: PgbotCommand,
     kind: CmdKind,
@@ -695,7 +784,7 @@ pub async fn run_effect(
 ) -> Action {
     let _permit = sem.acquire_owned().await.ok();
     let timeout = runner::default_timeout(&cmd);
-    let result = runner::run_pgbot(&pgbot_bin, &env_var, &cmd, timeout)
+    let result = runner::run_pgbot(&pgbot_bin, &source, &cmd, timeout)
         .await
         .and_then(|out| decode_result(&cmd, &out));
     Action::CheckFinished { db, kind, result }
@@ -705,18 +794,18 @@ pub async fn run_effect(
 pub async fn run_probe(
     pgbot_bin: PathBuf,
     name: String,
-    env: String,
+    source: ConnSource,
     save: bool,
     sem: Arc<Semaphore>,
 ) -> Action {
     let _permit = sem.acquire_owned().await.ok();
     let cmd = PgbotCommand::Probe;
-    let result = runner::run_pgbot(&pgbot_bin, &env, &cmd, runner::default_timeout(&cmd))
+    let result = runner::run_pgbot(&pgbot_bin, &source, &cmd, runner::default_timeout(&cmd))
         .await
         .and_then(|out| decode_result(&cmd, &out));
     Action::ProbeFinished {
         name,
-        env,
+        source,
         save,
         result,
     }
@@ -1094,7 +1183,7 @@ mod tests {
         // monitor spawned immediately.
         let effects = a.update(Action::ProbeFinished {
             name: "staging".into(),
-            env: "POPUP_ADD_URL".into(),
+            source: ConnSource::Env("POPUP_ADD_URL".into()),
             save: true,
             result: ok_ctx(HEALTHY),
         });
@@ -1129,7 +1218,7 @@ mod tests {
         }
         a.update(Action::ProbeFinished {
             name: "x".into(),
-            env: "Y".into(),
+            source: ConnSource::Env("Y".into()),
             save: false,
             result: ok_ctx(HEALTHY),
         });
@@ -1148,7 +1237,7 @@ mod tests {
         a.popup.as_mut().unwrap().busy = true;
         a.update(Action::ProbeFinished {
             name: "x".into(),
-            env: "Y".into(),
+            source: ConnSource::Env("Y".into()),
             save: true,
             result: Err(SafeError::new(
                 crate::sanitize::ErrorKind::ConnectionFailed,
@@ -1239,17 +1328,69 @@ mod tests {
     }
 
     #[test]
-    fn popup_explains_when_a_url_is_typed_instead_of_a_var_name() {
+    fn pasted_url_becomes_a_session_only_tab_and_never_touches_config() {
+        let _g = popup_env_guard();
+        let dir = std::env::temp_dir().join(format!("pgterm-session-add-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PGTERM_CONFIG", dir.join("config.toml"));
+
+        let mut a = app(1);
+        a.update(key(KeyCode::Char('a')));
+        {
+            let p = a.popup.as_mut().unwrap();
+            p.name = "pasted".into();
+            p.env = "postgres://alex:hunter2@db/app".into();
+        }
+        let effects = a.popup_submit(true);
+        match effects.as_slice() {
+            [Effect::SpawnProbe {
+                source: ConnSource::Session(url),
+                save: true,
+                ..
+            }] => assert!(url.contains("hunter2"), "the secret resolves in memory"),
+            other => panic!("expected a session probe, got {other:?}"),
+        }
+
+        let effects = a.update(Action::ProbeFinished {
+            name: "pasted".into(),
+            source: ConnSource::Session("postgres://alex:hunter2@db/app".into()),
+            save: true,
+            result: ok_ctx(HEALTHY),
+        });
+        assert!(a.popup.is_none());
+        assert_eq!(a.dbs.len(), 2);
+        assert_eq!(a.selected, 1);
+        assert!(matches!(a.dbs[1].source, ConnSource::Session(_)));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Spawn {
+                db: 1,
+                kind: CmdKind::Monitor,
+                ..
+            }]
+        ));
+        assert!(
+            !dir.join("config.toml").exists(),
+            "a session tab must never be written to disk"
+        );
+
+        std::env::remove_var("PGTERM_CONFIG");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pasted_url_with_a_bad_name_is_refused_without_echo() {
         let _g = popup_env_guard();
         let mut a = app(1);
         a.update(key(KeyCode::Char('a')));
         {
             let p = a.popup.as_mut().unwrap();
-            p.name = "newdb".into();
+            p.name = "has space".into();
             p.env = "postgres://alex:hunter2@db/app".into();
         }
         let effects = a.popup_submit(true);
-        assert!(effects.is_empty(), "no probe for a malformed reference");
+        assert!(effects.is_empty());
         let msg = a
             .popup
             .as_ref()
@@ -1258,7 +1399,30 @@ mod tests {
             .clone()
             .unwrap()
             .unwrap_err();
-        assert!(msg.message.contains("connection string"), "{}", msg.message);
+        assert!(msg.message.contains("letters"), "{}", msg.message);
         assert!(!msg.message.contains("hunter2"), "{}", msg.message);
+    }
+
+    #[test]
+    fn paste_routes_to_the_focused_input_and_strips_control_chars() {
+        let mut a = app(1);
+        // Command bar
+        a.update(key(KeyCode::Char('/')));
+        a.update(Action::Paste("inspect\n".into()));
+        assert_eq!(a.cmdline, "inspect", "newline stripped — no auto-submit");
+        a.update(key(KeyCode::Esc));
+        // Popup env field
+        a.update(key(KeyCode::Char('a')));
+        a.update(key(KeyCode::Tab));
+        a.update(Action::Paste("postgres://u:pw@h/db\n".into()));
+        assert_eq!(a.popup.as_ref().unwrap().env, "postgres://u:pw@h/db");
+        // Unfocused: ignored (Esc keeps the bar's text, so compare before/after)
+        a.update(key(KeyCode::Esc));
+        let before = a.cmdline.clone();
+        a.update(Action::Paste("stray".into()));
+        assert_eq!(
+            a.cmdline, before,
+            "paste with nothing focused must be inert"
+        );
     }
 }

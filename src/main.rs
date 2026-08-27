@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 
@@ -61,14 +63,22 @@ fn run_tui(interval: Option<u64>, no_monitor: bool, select: Option<String>) -> i
     // capture teardown in front so a panic never leaves clicks captured.
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            DisableMouseCapture,
+            DisableBracketedPaste
+        );
         prev(info);
     }));
-    let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+    let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste);
 
     let result = runtime().block_on(event_loop(&mut terminal, app));
 
-    let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        DisableMouseCapture,
+        DisableBracketedPaste
+    );
     ratatui::restore();
     match result {
         Ok(()) => 0,
@@ -129,20 +139,20 @@ fn perform(
                 let Some(state) = app.dbs.get(db) else {
                     continue;
                 };
-                let env = state.profile.env.clone();
+                let source = state.source.clone();
                 let bin = app.pgbot_bin.clone();
                 let tx = tx.clone();
                 let sem = sem.clone();
                 tokio::spawn(async move {
-                    let _ = tx.send(app::run_effect(bin, env, db, cmd, kind, sem).await);
+                    let _ = tx.send(app::run_effect(bin, source, db, cmd, kind, sem).await);
                 });
             }
-            Effect::SpawnProbe { name, env, save } => {
+            Effect::SpawnProbe { name, source, save } => {
                 let bin = app.pgbot_bin.clone();
                 let tx = tx.clone();
                 let sem = sem.clone();
                 tokio::spawn(async move {
-                    let _ = tx.send(app::run_probe(bin, name, env, save, sem).await);
+                    let _ = tx.send(app::run_probe(bin, name, source, save, sem).await);
                 });
             }
         }

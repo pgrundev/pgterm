@@ -6,7 +6,7 @@
 use crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::model::{Context, IndexesReport, WhyReport};
-use crate::runner::PgbotCommand;
+use crate::runner::{ConnSource, PgbotCommand};
 use crate::sanitize::SafeError;
 
 /// The per-database screens. Ask is reachable only through the command bar.
@@ -65,10 +65,12 @@ pub enum Action {
     /// A popup-driven probe finished (the database does not exist yet).
     ProbeFinished {
         name: String,
-        env: String,
+        source: ConnSource,
         save: bool,
         result: Result<StoredResult, SafeError>,
     },
+    /// Bracketed paste from the terminal, routed to the focused input.
+    Paste(String),
     Quit,
 }
 
@@ -82,7 +84,7 @@ pub enum Effect {
     },
     SpawnProbe {
         name: String,
-        env: String,
+        source: ConnSource,
         save: bool,
     },
 }

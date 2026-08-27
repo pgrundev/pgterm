@@ -223,16 +223,23 @@ fn draw_popup(
             Span::raw(cursor(PopupField::Name)),
         ]),
         Line::from(""),
-        Line::from(Span::styled("Environment variable", dim)),
+        Line::from(Span::styled("Connection", dim)),
         Line::from(vec![
-            Span::styled(popup.env.clone(), field_style(PopupField::Env)),
+            Span::styled(
+                // A pasted URL is a secret: mask it on screen immediately.
+                crate::sanitize::redact(&popup.env, None),
+                field_style(PopupField::Env),
+            ),
             Span::raw(cursor(PopupField::Env)),
         ]),
         Line::from(Span::styled(
-            "the NAME of an exported variable holding the URL —",
+            "a variable name (saved to config), or paste a URL",
             dim,
         )),
-        Line::from(Span::styled("never the URL itself", dim)),
+        Line::from(Span::styled(
+            "(a pasted URL is session-only and never saved)",
+            dim,
+        )),
         Line::from(""),
     ];
     if popup.busy {
@@ -578,5 +585,24 @@ mod tests {
         });
         let s = render(&mut app, 110, 32);
         assert!(s.contains("The checkout query lost its index."), "{s}");
+    }
+
+    #[test]
+    fn pasted_url_is_masked_on_screen() {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        let mut app = app_with(&["prod"]);
+        feed(&mut app, 0, HEALTHY);
+        app.update(Action::Key(KeyEvent::new(
+            crossterm::event::KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        )));
+        app.popup.as_mut().unwrap().env = "postgres://alex:hunter2@db/app".into();
+        let s = render(&mut app, 100, 30);
+        assert!(!s.contains("hunter2"), "password visible on screen: {s}");
+        assert!(s.contains("REDACTED"), "{s}");
+        assert!(
+            s.contains("session-only"),
+            "the hint explains the paste path: {s}"
+        );
     }
 }

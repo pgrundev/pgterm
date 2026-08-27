@@ -25,6 +25,11 @@ pub fn spawn_input_thread(tx: UnboundedSender<Action>) {
                     break;
                 }
             }
+            Ok(Event::Paste(s)) => {
+                if tx.send(Action::Paste(s)).is_err() {
+                    break;
+                }
+            }
             Ok(_) => {}
             Err(_) => break,
         }

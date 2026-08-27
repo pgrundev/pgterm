@@ -8,7 +8,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use pgterm::runner::{run_pgbot, PgbotCommand};
+use pgterm::runner::{run_pgbot, ConnSource, PgbotCommand};
 use pgterm::sanitize::ErrorKind;
 
 #[tokio::test]
@@ -20,7 +20,7 @@ async fn healthy_run_returns_json_stdout() {
 
     let out = run_pgbot(
         &bin,
-        "IT_HEALTHY_URL",
+        &ConnSource::Env("IT_HEALTHY_URL".into()),
         &PgbotCommand::Monitor,
         Duration::from_secs(10),
     )
@@ -41,7 +41,7 @@ async fn warn_exit_one_still_carries_json() {
 
     let out = run_pgbot(
         &bin,
-        "IT_WARN_URL",
+        &ConnSource::Env("IT_WARN_URL".into()),
         &PgbotCommand::Monitor,
         Duration::from_secs(10),
     )
@@ -61,7 +61,7 @@ async fn refused_connection_is_sanitized() {
 
     let err = run_pgbot(
         &bin,
-        "IT_REFUSE_URL",
+        &ConnSource::Env("IT_REFUSE_URL".into()),
         &PgbotCommand::Monitor,
         Duration::from_secs(10),
     )
@@ -88,7 +88,7 @@ async fn hang_is_killed_at_the_deadline() {
     let started = Instant::now();
     let err = run_pgbot(
         &bin,
-        "IT_HANG_URL",
+        &ConnSource::Env("IT_HANG_URL".into()),
         &PgbotCommand::Monitor,
         Duration::from_millis(300),
     )
@@ -111,7 +111,7 @@ async fn missing_env_never_spawns_pgbot() {
 
     let err = run_pgbot(
         &bin,
-        "IT_DOES_NOT_EXIST",
+        &ConnSource::Env("IT_DOES_NOT_EXIST".into()),
         &PgbotCommand::Monitor,
         Duration::from_secs(5),
     )
@@ -131,7 +131,7 @@ async fn missing_binary_reports_pgbot_missing() {
     std::env::set_var("IT_BIN_URL", common::dsn("healthy"));
     let err = run_pgbot(
         std::path::Path::new("/nonexistent/pgbot"),
-        "IT_BIN_URL",
+        &ConnSource::Env("IT_BIN_URL".into()),
         &PgbotCommand::Monitor,
         Duration::from_secs(5),
     )
@@ -149,7 +149,7 @@ async fn indexes_and_why_reach_their_own_reports() {
 
     let idx = run_pgbot(
         &bin,
-        "IT_REPORTS_URL",
+        &ConnSource::Env("IT_REPORTS_URL".into()),
         &PgbotCommand::Indexes,
         Duration::from_secs(10),
     )
@@ -160,7 +160,7 @@ async fn indexes_and_why_reach_their_own_reports() {
 
     let why = run_pgbot(
         &bin,
-        "IT_REPORTS_URL",
+        &ConnSource::Env("IT_REPORTS_URL".into()),
         &PgbotCommand::Why,
         Duration::from_secs(10),
     )
@@ -179,7 +179,7 @@ async fn dsn_travels_by_env_not_argv() {
 
     run_pgbot(
         &bin,
-        "IT_ENVONLY_URL",
+        &ConnSource::Env("IT_ENVONLY_URL".into()),
         &PgbotCommand::Monitor,
         Duration::from_secs(10),
     )

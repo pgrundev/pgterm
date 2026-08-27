@@ -10,6 +10,42 @@ use std::time::Duration;
 
 use crate::sanitize::{ErrorKind, SafeError};
 
+/// Where a database's DSN comes from. `Env` is the persisted form (config
+/// stores the variable's NAME); `Session` is a URL pasted into the running
+/// UI — memory only, never written to disk, gone when pgterm exits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnSource {
+    Env(String),
+    Session(String),
+}
+
+impl ConnSource {
+    /// Resolves the secret in memory at spawn time.
+    pub fn resolve(&self) -> Result<String, SafeError> {
+        match self {
+            ConnSource::Env(name) => match std::env::var(name) {
+                Ok(v) if !v.trim().is_empty() => Ok(v),
+                _ => Err(SafeError::new(
+                    ErrorKind::EnvMissing,
+                    &format!(
+                        "Environment variable {name} is not set — export it in the shell that launches pgterm, then restart."
+                    ),
+                    None,
+                )),
+            },
+            ConnSource::Session(url) => Ok(url.clone()),
+        }
+    }
+
+    /// What the UI may show for this source. Never the secret.
+    pub fn label(&self) -> &str {
+        match self {
+            ConnSource::Env(name) => name,
+            ConnSource::Session(_) => "pasted URL — this session only",
+        }
+    }
+}
+
 /// The closed set of pgbot operations the terminal may run. There is no
 /// variant that could carry a shell string — `Ask`'s payload travels as a
 /// single argv element.
@@ -97,20 +133,11 @@ pub struct RunOutcome {
 
 pub async fn run_pgbot(
     pgbot_bin: &Path,
-    env_var: &str,
+    source: &ConnSource,
     cmd: &PgbotCommand,
     timeout: Duration,
 ) -> Result<RunOutcome, SafeError> {
-    let secret = match std::env::var(env_var) {
-        Ok(v) if !v.trim().is_empty() => v,
-        _ => {
-            return Err(SafeError::new(
-                ErrorKind::EnvMissing,
-                &format!("Environment variable {env_var} is not set."),
-                None,
-            ))
-        }
-    };
+    let secret = source.resolve()?;
 
     let mut c = tokio::process::Command::new(pgbot_bin);
     c.args(args_for(cmd))

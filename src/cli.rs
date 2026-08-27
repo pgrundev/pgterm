@@ -4,7 +4,7 @@
 
 use crate::config::TerminalConfig;
 use crate::model::Context;
-use crate::runner::{self, PgbotCommand};
+use crate::runner::{self, ConnSource, PgbotCommand};
 use crate::sanitize::ErrorKind;
 
 pub const EXIT_OK: i32 = 0;
@@ -186,7 +186,7 @@ pub async fn cmd_add(opts: &AddOptions) -> i32 {
     println!("Testing {}...\n", opts.name);
     let probe = runner::run_pgbot(
         &runner::pgbot_bin(),
-        &env_name,
+        &ConnSource::Env(env_name.clone()),
         &PgbotCommand::Probe,
         runner::default_timeout(&PgbotCommand::Probe),
     )
