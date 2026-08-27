@@ -55,6 +55,16 @@ impl Server {
     pub fn major(&self) -> i64 {
         self.version_num / 10_000
     }
+
+    /// Compact server label for headers: "PostgreSQL 17", else whatever the
+    /// server said.
+    pub fn short_version(&self) -> String {
+        if self.major() > 0 {
+            format!("PostgreSQL {}", self.major())
+        } else {
+            self.version_text.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

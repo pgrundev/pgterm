@@ -109,6 +109,13 @@ impl DbState {
     pub fn checking(&self) -> bool {
         self.running.contains(&CmdKind::Monitor) || self.running.contains(&CmdKind::Inspect)
     }
+
+    /// Is the job that would fill the CURRENT view already in flight?
+    pub fn running_view_job(&self) -> bool {
+        view_command(self.view)
+            .map(|(_, kind)| self.running.contains(&kind))
+            .unwrap_or(false)
+    }
 }
 
 /// The pgbot command (and dedupe kind) behind each view.
