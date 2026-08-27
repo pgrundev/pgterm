@@ -45,6 +45,16 @@ views 1–5, `r`, the command bar (`/ ask why did checkout get slower?`).
 The demo keeps its config under `$TMPDIR/pgterm-demo`, so your real
 configuration is untouched.
 
+## Install
+
+```bash
+curl -sSf https://pgterm.dev/install.sh | sh
+```
+
+Downloads the latest release for your platform (linux/macOS, amd64/arm64),
+verifies its checksum, and installs to `/usr/local/bin` (override with
+`PGTERM_INSTALL_DIR`). Or build from source: `cargo build --release`.
+
 ## Quickstart
 
 pgterm drives [pgbot](https://github.com/pgrundev/pgbot), so install that
