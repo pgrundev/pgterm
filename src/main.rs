@@ -147,12 +147,18 @@ fn perform(
                     let _ = tx.send(app::run_effect(bin, source, db, cmd, kind, sem).await);
                 });
             }
-            Effect::SpawnProbe { name, source, save } => {
+            Effect::SpawnProbe {
+                name,
+                source,
+                save,
+                persist_env,
+            } => {
                 let bin = app.pgbot_bin.clone();
                 let tx = tx.clone();
                 let sem = sem.clone();
                 tokio::spawn(async move {
-                    let _ = tx.send(app::run_probe(bin, name, source, save, sem).await);
+                    let _ =
+                        tx.send(app::run_probe(bin, name, source, save, persist_env, sem).await);
                 });
             }
         }

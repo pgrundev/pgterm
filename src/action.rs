@@ -67,6 +67,9 @@ pub enum Action {
         name: String,
         source: ConnSource,
         save: bool,
+        /// For a pasted NAME='URL' assignment: the variable NAME to persist
+        /// in config while the URL itself stays session-only in memory.
+        persist_env: Option<String>,
         result: Result<StoredResult, SafeError>,
     },
     /// Bracketed paste from the terminal, routed to the focused input.
@@ -86,6 +89,7 @@ pub enum Effect {
         name: String,
         source: ConnSource,
         save: bool,
+        persist_env: Option<String>,
     },
 }
 

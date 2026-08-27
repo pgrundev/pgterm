@@ -243,14 +243,14 @@ fn draw_popup(
             PopupField::Env,
             // A pasted URL is a secret: mask it on screen immediately.
             crate::sanitize::redact(&popup.env, None),
-            "PROD_DATABASE_URL  ·  or paste postgres://...",
+            "STAGING_DATABASE_URL='postgresql://...'",
         ),
         Line::from(Span::styled(
-            "a variable name (saved to config), or paste a URL",
+            "paste NAME='URL' — connects now, saves only the NAME",
             dim,
         )),
         Line::from(Span::styled(
-            "(a pasted URL is session-only and never saved)",
+            "(bare URL: session-only · bare NAME: exported var)",
             dim,
         )),
         Line::from(""),
@@ -630,8 +630,11 @@ mod tests {
         )));
         let s = render(&mut app, 100, 30);
         assert!(s.contains("production"), "name example: {s}");
-        assert!(s.contains("PROD_DATABASE_URL"), "connection example: {s}");
-        assert!(s.contains("or paste postgres://"), "{s}");
+        assert!(
+            s.contains("STAGING_DATABASE_URL="),
+            "connection example: {s}"
+        );
+        assert!(s.contains("saves only the NAME"), "{s}");
 
         // Typing replaces the example.
         for c in "billing".chars() {

@@ -92,6 +92,10 @@ persisted.
   it is masked on screen, kept **in memory for that session only**, and never
   written anywhere — the tab disappears when pgterm exits. Use an env-var
   reference for databases you want to keep.
+- Best of both: paste the whole export line —
+  `STAGING_DATABASE_URL='postgresql://...'` — and pgterm connects with the
+  URL now (memory only) while saving just the **variable name** to config,
+  so the tab returns on the next launch once the variable is exported.
 - Connection strings reach pgbot through the child process **environment,
   never argv** — nothing shows up in `ps` or shell history.
 - Strictly read-only: pgterm runs only whitelisted pgbot diagnostics. There

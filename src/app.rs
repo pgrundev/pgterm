@@ -219,8 +219,9 @@ impl App {
                 name,
                 source,
                 save,
+                persist_env,
                 result,
-            } => self.on_probe_finished(&name, source, save, result),
+            } => self.on_probe_finished(&name, source, save, persist_env, result),
             Action::Paste(text) => {
                 self.handle_paste(&text);
                 Vec::new()
@@ -305,6 +306,7 @@ impl App {
         name: &str,
         source: ConnSource,
         save: bool,
+        persist_env: Option<String>,
         result: Result<StoredResult, SafeError>,
     ) -> Vec<Effect> {
         let Some(popup) = self.popup.as_mut() else {
@@ -323,11 +325,37 @@ impl App {
                     return Vec::new();
                 }
                 if let ConnSource::Session(url) = source {
-                    // Pasted URL: memory only. The config file is not touched,
-                    // so the tab lives exactly as long as this process.
+                    // Pasted URL: memory only for THIS session. If it arrived
+                    // as NAME='URL', the NAME (never the URL) is persisted so
+                    // the tab returns next launch once the var is exported.
+                    if let Some(env_name) = &persist_env {
+                        let mut cfg = match TerminalConfig::load() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                popup.message = Some(Err(SafeError::new(
+                                    crate::sanitize::ErrorKind::BadOutput,
+                                    &format!("{e:#}"),
+                                    None,
+                                )));
+                                return Vec::new();
+                            }
+                        };
+                        if let Err(e) = cfg.add(name, env_name).and_then(|()| cfg.save()) {
+                            popup.message = Some(Err(SafeError::new(
+                                crate::sanitize::ErrorKind::BadOutput,
+                                &format!("{e:#}"),
+                                None,
+                            )));
+                            return Vec::new();
+                        }
+                    }
                     self.popup = None;
                     self.focus = Focus::Main;
-                    self.dbs.push(DbState::session(name, url));
+                    let mut db = DbState::session(name, url);
+                    if let Some(env_name) = persist_env {
+                        db.profile.env = env_name;
+                    }
+                    self.dbs.push(db);
                     let idx = self.dbs.len() - 1;
                     self.selected = idx;
                     self.dbs[idx].running.insert(CmdKind::Monitor);
@@ -571,7 +599,8 @@ impl App {
         let conn = popup.env.trim().to_string();
 
         // A pasted URL becomes a session-only source: validated name, no
-        // config involvement, secret stays in memory.
+        // config involvement, secret stays in memory. The NAME='URL' shape
+        // additionally persists the NAME for future launches.
         if conn.contains("://") || conn.contains('=') {
             if let Err(e) = validate_session_name(&name, &self.dbs) {
                 popup.message = Some(Err(SafeError::new(
@@ -581,12 +610,17 @@ impl App {
                 )));
                 return Vec::new();
             }
+            let (url, persist_env) = match parse_export_assignment(&conn) {
+                Some((var, url)) => (url, Some(var)),
+                None => (conn, None),
+            };
             popup.busy = true;
             popup.message = None;
             return vec![Effect::SpawnProbe {
                 name,
-                source: ConnSource::Session(conn),
+                source: ConnSource::Session(url),
                 save,
+                persist_env,
             }];
         }
 
@@ -614,7 +648,12 @@ impl App {
         }
         popup.busy = true;
         popup.message = None;
-        vec![Effect::SpawnProbe { name, source, save }]
+        vec![Effect::SpawnProbe {
+            name,
+            source,
+            save,
+            persist_env: None,
+        }]
     }
 
     /// Pasted text goes to whichever input has focus; control characters are
@@ -772,6 +811,30 @@ fn validate_session_name(name: &str, dbs: &[DbState]) -> Result<(), String> {
     Ok(())
 }
 
+/// Recognizes a pasted shell assignment: `STAGING_DATABASE_URL='postgresql://...'`
+/// (optional `export ` prefix, single/double/no quotes). Returns the variable
+/// name and the URL, or None when the input is not that shape.
+fn parse_export_assignment(s: &str) -> Option<(String, String)> {
+    let s = s.trim();
+    let s = s.strip_prefix("export ").unwrap_or(s).trim();
+    let (name, value) = s.split_once('=')?;
+    let name = name.trim();
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    let value = value.trim();
+    let value = value
+        .strip_prefix('\'')
+        .and_then(|v| v.strip_suffix('\''))
+        .or_else(|| value.strip_prefix('"').and_then(|v| v.strip_suffix('"')))
+        .unwrap_or(value)
+        .trim();
+    if !value.contains("://") {
+        return None;
+    }
+    Some((name.to_string(), value.to_string()))
+}
+
 /// Performs one Spawn effect: waits on the concurrency semaphore, runs pgbot,
 /// decodes by command, and returns the Action to feed back into `update`.
 pub async fn run_effect(
@@ -796,6 +859,7 @@ pub async fn run_probe(
     name: String,
     source: ConnSource,
     save: bool,
+    persist_env: Option<String>,
     sem: Arc<Semaphore>,
 ) -> Action {
     let _permit = sem.acquire_owned().await.ok();
@@ -807,6 +871,7 @@ pub async fn run_probe(
         name,
         source,
         save,
+        persist_env,
         result,
     }
 }
@@ -1185,6 +1250,7 @@ mod tests {
             name: "staging".into(),
             source: ConnSource::Env("POPUP_ADD_URL".into()),
             save: true,
+            persist_env: None,
             result: ok_ctx(HEALTHY),
         });
         assert!(a.popup.is_none());
@@ -1220,6 +1286,7 @@ mod tests {
             name: "x".into(),
             source: ConnSource::Env("Y".into()),
             save: false,
+            persist_env: None,
             result: ok_ctx(HEALTHY),
         });
         let p = a.popup.as_ref().expect("popup stays open after Test");
@@ -1239,6 +1306,7 @@ mod tests {
             name: "x".into(),
             source: ConnSource::Env("Y".into()),
             save: true,
+            persist_env: None,
             result: Err(SafeError::new(
                 crate::sanitize::ErrorKind::ConnectionFailed,
                 "connect postgres://u:sekret@h/db: refused",
@@ -1356,6 +1424,7 @@ mod tests {
             name: "pasted".into(),
             source: ConnSource::Session("postgres://alex:hunter2@db/app".into()),
             save: true,
+            persist_env: None,
             result: ok_ctx(HEALTHY),
         });
         assert!(a.popup.is_none());
@@ -1424,5 +1493,82 @@ mod tests {
             a.cmdline, before,
             "paste with nothing focused must be inert"
         );
+    }
+
+    #[test]
+    fn export_assignment_parses_name_and_url() {
+        for input in [
+            "STAGING_DATABASE_URL='postgresql://u:pw@h/db'",
+            "STAGING_DATABASE_URL=\"postgresql://u:pw@h/db\"",
+            "STAGING_DATABASE_URL=postgresql://u:pw@h/db",
+            "export STAGING_DATABASE_URL='postgresql://u:pw@h/db'",
+        ] {
+            let (var, url) = parse_export_assignment(input).unwrap_or_else(|| panic!("{input}"));
+            assert_eq!(var, "STAGING_DATABASE_URL");
+            assert_eq!(url, "postgresql://u:pw@h/db");
+        }
+        // Not assignments: bare URL, bare name, keyword DSN value.
+        assert!(parse_export_assignment("postgres://u:pw@h/db").is_none());
+        assert!(parse_export_assignment("STAGING_DATABASE_URL").is_none());
+        assert!(parse_export_assignment("X='host=h password=y'").is_none());
+        assert!(parse_export_assignment("BAD NAME='postgres://h/db'").is_none());
+    }
+
+    #[test]
+    fn pasted_assignment_connects_now_and_persists_only_the_name() {
+        let _g = popup_env_guard();
+        let dir = std::env::temp_dir().join(format!("pgterm-assign-add-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PGTERM_CONFIG", dir.join("config.toml"));
+
+        let mut a = app(1);
+        a.update(key(KeyCode::Char('a')));
+        {
+            let p = a.popup.as_mut().unwrap();
+            p.name = "staging".into();
+            p.env = "STAGING_DATABASE_URL='postgres://alex:hunter2@db/app'".into();
+        }
+        let effects = a.popup_submit(true);
+        match effects.as_slice() {
+            [Effect::SpawnProbe {
+                source: ConnSource::Session(url),
+                persist_env: Some(var),
+                save: true,
+                ..
+            }] => {
+                assert_eq!(url, "postgres://alex:hunter2@db/app", "quotes stripped");
+                assert_eq!(var, "STAGING_DATABASE_URL");
+            }
+            other => panic!("expected assignment probe, got {other:?}"),
+        }
+
+        a.update(Action::ProbeFinished {
+            name: "staging".into(),
+            source: ConnSource::Session("postgres://alex:hunter2@db/app".into()),
+            save: true,
+            persist_env: Some("STAGING_DATABASE_URL".into()),
+            result: ok_ctx(HEALTHY),
+        });
+        assert_eq!(a.dbs.len(), 2);
+        assert!(
+            matches!(a.dbs[1].source, ConnSource::Session(_)),
+            "this session uses the URL"
+        );
+        assert_eq!(a.dbs[1].profile.env, "STAGING_DATABASE_URL");
+
+        let saved = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(saved.contains("env = \"STAGING_DATABASE_URL\""), "{saved}");
+        assert!(
+            !saved.contains("postgres://"),
+            "URL leaked to disk: {saved}"
+        );
+        assert!(
+            !saved.contains("hunter2"),
+            "password leaked to disk: {saved}"
+        );
+
+        std::env::remove_var("PGTERM_CONFIG");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
