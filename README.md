@@ -57,31 +57,58 @@ verifies its checksum, and installs to `/usr/local/bin` (override with
 
 ## Quickstart
 
-pgterm drives [pgbot](https://github.com/pgrundev/pgbot), so install that
-first:
+pgterm drives [pgbot](https://github.com/pgrundev/pgbot), so install both:
 
 ```bash
-curl -fsSL https://pgbot.dev/install | sh
+curl -fsSL https://pgterm.dev/install.sh | sh   # pgterm
+curl -fsSL https://pgbot.dev/install | sh       # pgbot (the diagnostic engine)
 ```
 
-Then add your database and open the terminal:
+Point pgterm at your database and open it:
 
 ```bash
-export DATABASE_URL='postgresql://...'
+export DATABASE_URL='postgresql://user:password@host:5432/dbname'
 
-pgterm add production
-pgterm
-```
-
-More databases, each from its own environment variable:
-
-```bash
-pgterm add staging   --env STAGING_DATABASE_URL
-pgterm add analytics --env ANALYTICS_DATABASE_URL --open
+pgterm add production   # validates the connection, then saves the profile
+pgterm                  # opens the UI
 ```
 
 `add` tests the connection before saving anything; a broken profile is never
 persisted.
+
+### Adding more databases
+
+Give each database its own environment variable and reference it by name:
+
+```bash
+export STAGING_DATABASE_URL='postgresql://...'
+export ANALYTICS_DATABASE_URL='postgresql://...'
+
+pgterm add staging   --env STAGING_DATABASE_URL
+pgterm add analytics --env ANALYTICS_DATABASE_URL --open   # --open jumps straight in
+```
+
+pgterm resolves variables when it starts — export first, then launch. To make
+a variable survive new terminals, add its `export` line to your shell profile
+(`~/.zshrc` or `~/.bashrc`):
+
+```bash
+echo "export STAGING_DATABASE_URL='postgresql://...'" >> ~/.zshrc
+```
+
+`pgterm list` shows every profile and whether its variable is currently set.
+
+### Adding from inside the UI
+
+Press `a` (or click `+ Add DB`). The Connection field accepts any of:
+
+| You type or paste | What happens |
+|---|---|
+| `STAGING_DATABASE_URL` | references the exported variable — persisted to config |
+| `postgresql://user:pass@host/db` | connects now, **session-only**, never saved |
+| `STAGING_DATABASE_URL='postgresql://...'` | connects now with the URL, saves only the **name** |
+
+Whatever you paste is masked on screen; connection strings never touch disk.
 
 ## Security posture
 
