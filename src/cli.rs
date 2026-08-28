@@ -200,10 +200,8 @@ pub async fn cmd_add(opts: &AddOptions) -> i32 {
                 ErrorKind::ConnectionFailed | ErrorKind::Timeout => {
                     eprintln!("Connection failed:\n{}\n", e.message)
                 }
-                ErrorKind::PgbotMissing => eprintln!(
-                    "pgbot was not found ({}).\nInstall pgbot (curl -fsSL https://pgbot.dev/install | sh) or point PGBOT_BIN at it.\n",
-                    e.message
-                ),
+                // PgbotMissing needs no special arm: Display itself carries
+                // the install hint, for the TUI surfaces as much as here.
                 _ => eprintln!("{e}\n"),
             }
             eprintln!("Nothing was saved.");

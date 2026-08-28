@@ -254,3 +254,18 @@ fn env_flag_with_a_url_gets_guidance_not_an_echo() {
     assert!(se.contains("Nothing was saved."), "{se}");
     assert!(!s.config_path().exists());
 }
+
+#[test]
+fn missing_pgbot_binary_gets_install_guidance() {
+    let s = Setup::new("add-no-pgbot");
+    let out = run(s
+        .cmd(&["add", "prod", "--env", "P_URL"])
+        .env("P_URL", common::dsn("healthy"))
+        .env("PGBOT_BIN", s.dir.path().join("does-not-exist")));
+    assert_ne!(out.status.code(), Some(0));
+    let se = stderr(&out);
+    assert!(se.contains("pgbot.dev/install"), "{se}");
+    assert!(se.contains("PGBOT_BIN"), "{se}");
+    assert!(se.contains("Nothing was saved."), "{se}");
+    assert!(!s.config_path().exists());
+}

@@ -125,6 +125,12 @@ impl SafeError {
     }
 }
 
+/// The one sentence that knows how to get pgbot. Display appends it to every
+/// PgbotMissing error, so each render surface — tab footer, states screen,
+/// popup, CLI — shows the fix, not just the failure.
+pub const PGBOT_INSTALL_HINT: &str =
+    "Install: curl -fsSL https://pgbot.dev/install | sh — or set PGBOT_BIN to its path";
+
 impl fmt::Display for SafeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self.kind {
@@ -136,10 +142,14 @@ impl fmt::Display for SafeError {
             ErrorKind::Usage => "internal error (bad pgbot invocation)",
         };
         if self.message.is_empty() {
-            write!(f, "{label}")
+            write!(f, "{label}")?;
         } else {
-            write!(f, "{label}: {}", self.message)
+            write!(f, "{label}: {}", self.message)?;
         }
+        if self.kind == ErrorKind::PgbotMissing {
+            write!(f, ". {PGBOT_INSTALL_HINT}")?;
+        }
+        Ok(())
     }
 }
 
@@ -148,6 +158,24 @@ impl std::error::Error for SafeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pgbot_missing_display_carries_install_guidance() {
+        // Every surface (tab footer, states screen, popup, CLI) renders this
+        // through Display — the guidance must live IN the message, so no new
+        // render site can ever show a bare "pgbot not found" again.
+        let e = SafeError::new(ErrorKind::PgbotMissing, "No such file or directory", None);
+        let s = e.to_string();
+        assert!(s.contains("pgbot not found"), "{s}");
+        assert!(s.contains("pgbot.dev/install"), "{s}");
+        assert!(s.contains("PGBOT_BIN"), "{s}");
+    }
+
+    #[test]
+    fn other_kinds_do_not_carry_install_guidance() {
+        let e = SafeError::new(ErrorKind::ConnectionFailed, "refused", None);
+        assert!(!e.to_string().contains("pgbot.dev/install"), "{e}");
+    }
 
     #[test]
     fn url_password_is_redacted() {

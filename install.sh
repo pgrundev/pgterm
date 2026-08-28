@@ -8,6 +8,7 @@
 # Environment:
 #   PGTERM_VERSION      version to install (default: latest release)
 #   PGTERM_INSTALL_DIR  where the binary goes (default: /usr/local/bin)
+#   PGTERM_NO_PGBOT     set to 1 to skip installing pgbot when it's missing
 set -eu
 
 REPO="pgrundev/pgterm"
@@ -49,7 +50,11 @@ else
 fi
 
 if [ "$VERSION" = "latest" ]; then
-  VERSION=$(fetch_stdout "https://api.github.com/repos/$REPO/releases/latest" |
+  # Buffer the response before parsing: piping curl straight into `head -1`
+  # makes head exit early, and curl then prints a scary-but-harmless
+  # "(23) Failure writing output" onto the installer's output.
+  release_json=$(fetch_stdout "https://api.github.com/repos/$REPO/releases/latest") || release_json=""
+  VERSION=$(printf '%s' "$release_json" |
     sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
   [ -n "$VERSION" ] || die "could not determine the latest release (no releases yet?)"
 fi
@@ -84,11 +89,25 @@ fi
 
 say "installed: $("$INSTALL_DIR/pgterm" --version)"
 
-if ! have pgbot; then
+# pgterm drives pgbot — without it every check fails with "pgbot not found".
+# Install it too unless it's already present or the user opted out. Its
+# installer verifies its own checksums (and cosign signature when available);
+# a failure here must not undo the pgterm install we just finished, so fall
+# back to printing the command rather than dying.
+if ! have pgbot && [ "${PGTERM_NO_PGBOT:-0}" != "1" ]; then
   say ""
-  say "pgterm drives pgbot, which is not on your PATH yet. Install it with:"
+  say "pgterm drives pgbot, which is not on your PATH yet — installing it too"
+  say "(set PGTERM_NO_PGBOT=1 to skip this)"
   say ""
-  say "  curl -fsSL https://pgbot.dev/install | sh"
+  if fetch "https://pgbot.dev/install" "$tmp/pgbot-install.sh" &&
+    PGBOT_INSTALL_DIR="${PGBOT_INSTALL_DIR:-$INSTALL_DIR}" sh "$tmp/pgbot-install.sh"; then
+    :
+  else
+    say ""
+    say "pgbot install did not complete — pgterm is installed, but you still need pgbot:"
+    say ""
+    say "  curl -fsSL https://pgbot.dev/install | sh"
+  fi
 fi
 
 say ""
