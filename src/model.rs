@@ -17,6 +17,18 @@ fn decode<'a, T: Deserialize<'a>>(json: &'a str, what: &str) -> Result<T, SafeEr
     })
 }
 
+/// Go marshals a nil slice as `null`, and pgbot builds several of its lists
+/// with `var xs []T` — so a clean database sends `"findings": null` rather
+/// than `[]`. Struct-level `#[serde(default)]` only covers a *missing* key;
+/// this accepts an explicit null as the empty list too. (Issue #3.)
+fn null_as_empty<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
+}
+
 /// `pgbot inspect --json` — the versioned Context document.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -32,6 +44,7 @@ pub struct Context {
     pub tables: Option<Tables>,
     pub indexes: Option<Indexes>,
     pub replication: Option<Replication>,
+    #[serde(deserialize_with = "null_as_empty")]
     pub findings: Vec<Finding>,
 }
 
@@ -110,6 +123,7 @@ pub struct Queries {
     pub enabled: bool,
     pub reason: Option<String>,
     pub total_exec_ms: f64,
+    #[serde(deserialize_with = "null_as_empty")]
     pub top: Vec<QueryStat>,
 }
 
@@ -129,6 +143,7 @@ pub struct QueryStat {
 #[serde(default)]
 pub struct Tables {
     pub db_size_bytes: i64,
+    #[serde(deserialize_with = "null_as_empty")]
     pub top: Vec<TableStat>,
 }
 
@@ -151,6 +166,7 @@ pub struct TableStat {
 #[serde(default)]
 pub struct Indexes {
     pub total: i64,
+    #[serde(deserialize_with = "null_as_empty")]
     pub unused: Vec<IndexStat>,
 }
 
@@ -169,6 +185,7 @@ pub struct IndexStat {
 #[serde(default)]
 pub struct Replication {
     pub is_replica: bool,
+    #[serde(deserialize_with = "null_as_empty")]
     pub replicas: Vec<ReplicaRow>,
     pub receiver_lag_sec: Option<f64>,
 }
@@ -188,9 +205,11 @@ pub struct Finding {
     pub title: String,
     pub detail: String,
     pub object: Option<String>,
+    #[serde(deserialize_with = "null_as_empty")]
     pub evidence: Vec<String>,
     pub remediation: Option<String>,
     pub confidence: f64,
+    #[serde(deserialize_with = "null_as_empty")]
     pub caveats: Vec<String>,
     pub suppressed: bool,
     pub suppression_reason: Option<String>,
@@ -205,6 +224,7 @@ pub struct IndexesReport {
     pub fingerprint: String,
     pub cold_window: bool,
     pub stats_window_days: f64,
+    #[serde(deserialize_with = "null_as_empty")]
     pub indexes: Vec<IndexVerdict>,
     pub note: Option<String>,
 }
@@ -231,6 +251,7 @@ pub struct IndexVerdict {
     pub instruction: Option<String>,
     pub if_found: Option<String>,
     pub if_not_found: Option<String>,
+    #[serde(deserialize_with = "null_as_empty")]
     pub search_terms: Vec<String>,
 }
 
@@ -243,7 +264,9 @@ pub struct WhyReport {
     pub snapshots: i64,
     pub analyzed_queries: i64,
     pub regressions_found: i64,
+    #[serde(deserialize_with = "null_as_empty")]
     pub chains: Vec<WhyChain>,
+    #[serde(deserialize_with = "null_as_empty")]
     pub notes: Vec<String>,
 }
 
@@ -257,6 +280,7 @@ impl WhyReport {
 #[serde(default)]
 pub struct WhyChain {
     pub symptom: WhyHop,
+    #[serde(deserialize_with = "null_as_empty")]
     pub hops: Vec<WhyHop>,
     pub confidence: f64,
 }
@@ -337,6 +361,50 @@ mod tests {
         assert_eq!(chain.symptom.after, Some(26.0));
         assert_eq!(chain.hops.len(), 3);
         assert!((chain.confidence - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn null_sequences_decode_as_empty() {
+        // Go marshals a nil slice as `null` (pgbot's `findings` has no
+        // omitempty, so a clean database sends `"findings": null` — issue #3).
+        // A missing key already defaults; an explicit null must too.
+        let c = Context::decode(
+            r#"{"schema_version":"1.2.0","findings":null,
+                "queries":{"enabled":true,"top":null},
+                "tables":{"top":null},
+                "indexes":{"unused":null},
+                "replication":{"is_replica":false,"replicas":null}}"#,
+        )
+        .unwrap();
+        assert!(c.findings.is_empty());
+        assert!(c.queries.unwrap().top.is_empty());
+        assert!(c.tables.unwrap().top.is_empty());
+        assert!(c.indexes.unwrap().unused.is_empty());
+        assert!(c.replication.unwrap().replicas.is_empty());
+
+        let f = Context::decode(
+            r#"{"findings":[{"id":"x","severity":"info","title":"t","detail":"d",
+                "evidence":null,"caveats":null}]}"#,
+        )
+        .unwrap();
+        assert!(f.findings[0].evidence.is_empty());
+        assert!(f.findings[0].caveats.is_empty());
+
+        let r = IndexesReport::decode(r#"{"fingerprint":"f","indexes":null}"#).unwrap();
+        assert!(r.indexes.is_empty());
+        let r = IndexesReport::decode(
+            r#"{"indexes":[{"index":"i","table":"t","schema":"s","search_terms":null}]}"#,
+        )
+        .unwrap();
+        assert!(r.indexes[0].search_terms.is_empty());
+
+        let w = WhyReport::decode(r#"{"chains":null,"notes":null}"#).unwrap();
+        assert!(w.chains.is_empty() && w.notes.is_empty());
+        let w = WhyReport::decode(
+            r#"{"chains":[{"symptom":{"role":"r","text":"t"},"hops":null,"confidence":0.5}]}"#,
+        )
+        .unwrap();
+        assert!(w.chains[0].hops.is_empty());
     }
 
     #[test]
