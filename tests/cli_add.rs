@@ -2,7 +2,6 @@
 //! real binary with a fake pgbot as PGBOT_BIN. Each test gets its own config
 //! file and a scrubbed child environment — no process-env races, no real
 //! PostgreSQL.
-#![cfg(unix)]
 
 mod common;
 
