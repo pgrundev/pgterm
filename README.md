@@ -57,8 +57,16 @@ verifies its checksum, and installs to `/usr/local/bin` (override with
 — the diagnostic engine — so if pgbot isn't on your PATH the installer fetches
 it too, through pgbot's own checksum-verified installer (skip that with
 `PGTERM_NO_PGBOT=1`). `https://pgterm.dev/install.sh` works too (it
-redirects here — keep the `-L` flag). Or build from source:
-`cargo build --release`.
+redirects here — keep the `-L` flag).
+
+Or with [Homebrew](https://brew.sh) on macOS or Linux — pgbot comes along as
+a dependency:
+
+```bash
+brew install pgrundev/tap/pgterm
+```
+
+Or build from source: `cargo build --release`.
 
 ## Quickstart
 

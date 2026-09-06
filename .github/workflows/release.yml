@@ -112,3 +112,74 @@ jobs:
           out="$("pgterm_${VERSION}_${os}_${arch}/pgterm" --version)"
           echo "$out"
           [ "$out" = "pgterm ${VERSION}" ] || { echo "version mismatch"; exit 1; }
+
+  # Homebrew: render Formula/pgterm.rb from the checksums just published and
+  # push it to pgrundev/homebrew-tap. GITHUB_TOKEN cannot write to another
+  # repository, so the push authenticates with a write deploy key registered
+  # on the tap (secret HOMEBREW_TAP_DEPLOY_KEY on this repo — see
+  # docs/releasing.md → Homebrew). No key → this job fails loudly rather than
+  # letting `brew install pgrundev/tap/pgterm` silently lag behind.
+  homebrew:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: render the formula from the published checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt
+          sh packaging/homebrew/formula.sh "$VERSION" checksums.txt > pgterm.rb
+          cat pgterm.rb
+      - name: push it to pgrundev/homebrew-tap
+        env:
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          set -eu
+          if [ -z "$HOMEBREW_TAP_DEPLOY_KEY" ]; then
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY is not set — the Homebrew formula was NOT published for this release (brew install pgrundev/tap/pgterm will lag behind). See docs/releasing.md → Homebrew."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$HOMEBREW_TAP_DEPLOY_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          # GitHub's published SSH host key (docs.github.com → "GitHub's SSH
+          # key fingerprints"), pinned instead of trusting a keyscan.
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+          git clone --depth 1 git@github.com:pgrundev/homebrew-tap.git tap
+          cp pgterm.rb tap/Formula/pgterm.rb
+          cd tap
+          git config user.name pgterm-release
+          git config user.email hello@pgrun.dev
+          git add Formula/pgterm.rb
+          git commit -m "pgterm $GITHUB_REF_NAME"
+          git push origin HEAD:main
+
+  # Prove the published formula installs THIS tag on a fresh mac, the way a
+  # user does it — including pgbot arriving as its dependency.
+  brew-smoke:
+    needs: homebrew
+    name: brew install pgrundev/tap/pgterm
+    runs-on: macos-latest
+    steps:
+      - name: brew install the tap formula and check the version
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+          for i in $(seq 1 10); do
+            brew untap pgrundev/tap >/dev/null 2>&1 || true
+            if brew install pgrundev/tap/pgterm && [ "$(pgterm --version)" = "pgterm ${VERSION}" ]; then
+              echo "brew install pgrundev/tap/pgterm → $(pgterm --version) ✓"
+              pgbot --version
+              brew test pgterm
+              exit 0
+            fi
+            echo "tap formula not at ${VERSION} yet (attempt $i) — waiting"
+            sleep 20
+          done
+          echo "FAILED: brew install pgrundev/tap/pgterm never yielded pgterm ${VERSION}"
+          exit 1
