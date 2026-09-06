@@ -42,8 +42,10 @@ class Pgterm < Formula
   version "${VERSION}"
   license "Apache-2.0"
 
-  # pgterm drives pgbot for every diagnostic; the formula pulls it in.
-  depends_on "pgrundev/tap/pgbot"
+  # No depends_on "pgrundev/tap/pgbot": Homebrew 6 trusts only the formula
+  # named on the command line, so a dependency from the same third-party tap
+  # is refused ("untrusted tap") for everyone who has not run brew trust.
+  # pgbot is installed alongside instead (README) and named in caveats.
 
   on_macos do
     on_intel do
@@ -69,6 +71,13 @@ class Pgterm < Formula
 
   def install
     bin.install "pgterm"
+  end
+
+  def caveats
+    <<~EOS
+      pgterm drives pgbot for every diagnostic. If pgbot is not on your PATH yet:
+        brew install pgrundev/tap/pgbot
+    EOS
   end
 
   test do

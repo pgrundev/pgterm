@@ -60,8 +60,10 @@ so `pgbook next` in a shell continues where you stopped in pgterm.
 - Install hint text: `curl -fsSL https://pgbook.dev/install.sh | sh`, or
   `brew install pgrundev/tap/pgbook`, or point `PGBOOK_BIN` at it.
 - `install.sh` bootstraps pgbook when missing, exactly as it does pgbot
-  (`PGTERM_NO_PGBOOK=1` opts out). The Homebrew formula adds
-  `depends_on "pgrundev/tap/pgbook"`.
+  (`PGTERM_NO_PGBOOK=1` opts out). The Homebrew formula does **not** declare
+  a dependency (Homebrew 6 refuses same-tap dependencies as untrusted — see
+  `docs/releasing.md`); its caveats mention `brew install pgrundev/tap/pgbook`
+  and the README's install line names all three formulae.
 
 ### Runner — `src/book.rs`
 
@@ -256,7 +258,8 @@ the demo shows the book without network or pgbook.
 ### Packaging and docs
 
 - `install.sh`: pgbook bootstrap block next to the pgbot one.
-- `packaging/homebrew/formula.sh`: `depends_on "pgrundev/tap/pgbook"`.
+- `packaging/homebrew/formula.sh`: caveats mention pgbook; README install
+  line becomes `brew install pgrundev/tap/pgterm pgrundev/tap/pgbot pgrundev/tap/pgbook`.
 - README: a "Read the Postgres Book" section, the key table, `PGBOOK_BIN`,
   the demo mention; help overlay updated; `docs/design.md` gets a pointer to
   this file.

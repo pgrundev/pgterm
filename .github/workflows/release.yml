@@ -159,7 +159,9 @@ jobs:
           git push origin HEAD:main
 
   # Prove the published formula installs THIS tag on a fresh mac, the way a
-  # user does it — including pgbot arriving as its dependency.
+  # user does it. Both formulae are named on the command line: Homebrew 6
+  # trusts exactly the third-party formulae you name, so the README's
+  # one-liner installs pgterm and pgbot together without a `brew trust` step.
   brew-smoke:
     needs: homebrew
     name: brew install pgrundev/tap/pgterm
@@ -172,9 +174,8 @@ jobs:
           export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
           for i in $(seq 1 10); do
             brew untap pgrundev/tap >/dev/null 2>&1 || true
-            if brew install pgrundev/tap/pgterm && [ "$(pgterm --version)" = "pgterm ${VERSION}" ]; then
-              echo "brew install pgrundev/tap/pgterm → $(pgterm --version) ✓"
-              pgbot --version
+            if brew install pgrundev/tap/pgterm pgrundev/tap/pgbot && [ "$(pgterm --version)" = "pgterm ${VERSION}" ]; then
+              echo "brew install pgrundev/tap/pgterm pgrundev/tap/pgbot → $(pgterm --version) / $(pgbot --version) ✓"
               brew test pgterm
               exit 0
             fi

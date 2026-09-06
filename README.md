@@ -59,11 +59,11 @@ it too, through pgbot's own checksum-verified installer (skip that with
 `PGTERM_NO_PGBOT=1`). `https://pgterm.dev/install.sh` works too (it
 redirects here — keep the `-L` flag).
 
-Or with [Homebrew](https://brew.sh) on macOS or Linux — pgbot comes along as
-a dependency:
+Or with [Homebrew](https://brew.sh) on macOS or Linux — name both formulae,
+pgterm and the pgbot it drives, so Homebrew trusts both from the tap:
 
 ```bash
-brew install pgrundev/tap/pgterm
+brew install pgrundev/tap/pgterm pgrundev/tap/pgbot
 ```
 
 Or build from source: `cargo build --release`.

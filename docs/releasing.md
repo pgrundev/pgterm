@@ -51,9 +51,14 @@ gh secret set HOMEBREW_TAP_DEPLOY_KEY --repo pgrundev/pgterm < /tmp/pgterm-tap-k
 rm -f /tmp/pgterm-tap-key /tmp/pgterm-tap-key.pub
 ```
 
-The formula declares `depends_on "pgrundev/tap/pgbot"`, so `brew install
-pgrundev/tap/pgterm` installs pgbot too, mirroring what `install.sh` does.
-Render it locally to eyeball a release:
+The formula deliberately has **no** `depends_on "pgrundev/tap/pgbot"`:
+Homebrew 6 trusts only the third-party formulae named on the command line
+(`explicitly_allowed?` in Homebrew's `trust.rb`), so a dependency from the
+same tap is refused with "untrusted tap" unless the user ran `brew trust`.
+Instead the README installs both by name — `brew install pgrundev/tap/pgterm
+pgrundev/tap/pgbot` — and the formula's caveats say how to add pgbot later.
+`brew-smoke` runs that same two-formula command. Render the formula locally
+to eyeball a release:
 
 ```bash
 gh release download v0.1.3 -R pgrundev/pgterm -p checksums.txt
