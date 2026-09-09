@@ -31,6 +31,27 @@ impl View {
     ];
 }
 
+/// Top-level tabs of the main pane. One current tab per database, so
+/// switching databases returns you where you were.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Tab {
+    Overview,
+    PgBot,
+}
+
+impl Tab {
+    /// The tab row: number key ↔ tab.
+    pub const NUMBERED: [(char, Tab, &'static str); 2] =
+        [('1', Tab::Overview, "Overview"), ('2', Tab::PgBot, "PgBot")];
+}
+
+/// Which pane holds keyboard focus while `Focus::Main`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Sidebar,
+    Main,
+}
+
 /// What kind of background job is (or was) running for a database — the
 /// dedupe key: one job of a kind per database at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
