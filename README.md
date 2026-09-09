@@ -318,9 +318,11 @@ Needs [pgrun](https://github.com/pgrundev/pgrun-cli) on your PATH (or
 
 ## Mouse
 
-Clicking works on the sidebar, the tabs, the pgbot sub-tabs, the palette, and
-the rows of the Data and Branches tabs. Whatever the pointer is over is
-**underlined**, so you can tell what will respond before you click.
+Clicking works on every database row and the add row in the sidebar, both tab
+rows, the palette's entries, the `^K commands` hint, the schema, table and
+branch rows, and the Add Database popup's three buttons. Whatever the pointer
+is over is **underlined**, so you can tell what will respond before you
+click, and a test checks that each region really sits on the thing it names.
 
 pgterm also asks the terminal for a hand pointer over those things, using
 `OSC 22`. That lands in **Ghostty, kitty, WezTerm, foot and xterm**; other

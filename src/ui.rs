@@ -131,7 +131,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.hitmap.extend(hits);
     }
     if let Some(popup) = app.popup.clone() {
-        let hits = draw_popup(f, area, &popup, app.focus);
+        let hits = draw_popup(f, area, &popup, app.focus, app.hover.as_ref());
         app.hitmap.extend(hits);
     }
 }
@@ -324,6 +324,7 @@ fn draw_popup(
     area: Rect,
     popup: &crate::app::AddPopup,
     focus: Focus,
+    hover: Option<&Hit>,
 ) -> Vec<(Rect, Hit)> {
     let mut button_hits: Vec<(Rect, Hit)> = Vec::new();
     use crate::app::PopupField;
@@ -426,19 +427,37 @@ fn draw_popup(
                     Style::default().fg(Color::Red),
                 )));
             }
+            // Three buttons, evenly spaced; the offsets below must match.
             None => lines.push(Line::from(vec![
-                Span::styled("[ Test ]", Style::default().fg(Color::Cyan)),
-                Span::raw("  Ctrl+T                 "),
-                Span::styled("[ Add ]", Style::default().fg(Color::Green)),
-                Span::raw("  Enter"),
+                Span::styled(
+                    "[ Test ]",
+                    hover_style(
+                        Style::default().fg(Color::Cyan),
+                        focus == Focus::Popup && hover == Some(&Hit::PopupTest),
+                    ),
+                ),
+                Span::raw("  Ctrl+T    "),
+                Span::styled(
+                    "[ Add ]",
+                    hover_style(
+                        Style::default().fg(Color::Green),
+                        focus == Focus::Popup && hover == Some(&Hit::PopupAdd),
+                    ),
+                ),
+                Span::raw("  Enter    "),
+                Span::styled(
+                    "[ Cancel ]",
+                    hover_style(
+                        Style::default().fg(Color::DarkGray),
+                        focus == Focus::Popup && hover == Some(&Hit::PopupCancel),
+                    ),
+                ),
+                Span::raw("  Esc"),
             ])),
         }
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Enter Add    Ctrl+T Test    Esc Cancel",
-        dim,
-    )));
+    // No key hints below: the button row above already carries them, and a
+    // busy/answered popup shows the message in their place.
 
     let show_buttons = !popup.busy && popup.message.is_none();
     f.render_widget(
@@ -455,8 +474,10 @@ fn draw_popup(
         // The action row is the 12th content line inside the border; the
         // popup has a fixed layout so the offsets are stable.
         let y = rect.y + 12;
+        // Column offsets of the three labels on the action row above.
         button_hits.push((Rect::new(rect.x + 1, y, 8, 1), Hit::PopupTest));
-        button_hits.push((Rect::new(rect.x + 34, y, 7, 1), Hit::PopupAdd));
+        button_hits.push((Rect::new(rect.x + 21, y, 7, 1), Hit::PopupAdd));
+        button_hits.push((Rect::new(rect.x + 39, y, 10, 1), Hit::PopupCancel));
     }
     button_hits
 }
@@ -1076,5 +1097,77 @@ mod tests {
             }
         }
         println!("{}", render(&mut app, 110, 26));
+    }
+
+    /// Every clickable region must actually sit on the thing it claims, or
+    /// the hand pointer appears over nothing and the click misses.
+    #[test]
+    fn hit_regions_land_on_the_text_they_claim() {
+        fn buffer_of(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, app)).unwrap();
+            term.backend().buffer().clone()
+        }
+        fn row_text(buf: &ratatui::buffer::Buffer, r: Rect) -> String {
+            (r.x..r.x + r.width)
+                .map(|x| buf[(x, r.y)].symbol().to_string())
+                .collect()
+        }
+
+        // The Add Database popup: its buttons are drawn at fixed offsets.
+        let mut app = app_with(&["prod"]);
+        press(&mut app, crossterm::event::KeyCode::Char('a'));
+        let buf = buffer_of(&mut app, 110, 30);
+        for (hit, want) in [
+            (Hit::PopupTest, "Test"),
+            (Hit::PopupAdd, "Add"),
+            (Hit::PopupCancel, "Cancel"),
+        ] {
+            let rect = app
+                .hitmap
+                .iter()
+                .find(|(_, h)| *h == hit)
+                .map(|(r, _)| *r)
+                .unwrap_or_else(|| panic!("{hit:?} is not clickable at all"));
+            let text = row_text(&buf, rect);
+            assert!(
+                text.contains(want),
+                "{hit:?} points at {text:?}, which is not the {want} button"
+            );
+        }
+
+        // The shell's own chrome.
+        let mut app = app_with(&["prod", "staging"]);
+        feed(&mut app, 0, HEALTHY);
+        let buf = buffer_of(&mut app, 120, 32);
+        let claims = [
+            (Hit::SelectDb(1), "staging"),
+            (Hit::OpenAdd, "Add database"),
+            (Hit::SetTab(crate::action::Tab::Sql), "SQL"),
+            (Hit::OpenPalette, "commands"),
+        ];
+        for (hit, want) in claims {
+            let rect = app
+                .hitmap
+                .iter()
+                .find(|(_, h)| *h == hit)
+                .map(|(r, _)| *r)
+                .unwrap_or_else(|| panic!("{hit:?} is not clickable at all"));
+            let text = row_text(&buf, rect);
+            assert!(
+                text.contains(want),
+                "{hit:?} points at {text:?}, which does not contain {want:?}"
+            );
+        }
+    }
+
+    /// Shows the popup so the three buttons can be eyeballed:
+    /// `cargo test --lib show_popup -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn show_popup() {
+        let mut app = app_with(&["prod"]);
+        press(&mut app, crossterm::event::KeyCode::Char('a'));
+        println!("{}", render(&mut app, 100, 26));
     }
 }
