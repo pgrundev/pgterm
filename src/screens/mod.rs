@@ -7,8 +7,10 @@ pub mod indexes;
 pub mod inspect;
 pub mod overview;
 pub mod queries;
+pub mod sidebar;
 pub mod states;
 pub mod tables;
+pub mod tabs;
 pub mod why;
 
 use ratatui::layout::Rect;

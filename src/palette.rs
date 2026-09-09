@@ -28,59 +28,34 @@ pub struct PaletteState {
     pub cursor: usize,
 }
 
+/// Switching database is the most common thing to reach for, so those items
+/// lead: with an empty query every item scores 0 and declaration order wins.
 pub fn items(db_names: &[&str]) -> Vec<PaletteItem> {
-    let mut v = vec![
-        PaletteItem {
-            label: "refresh".into(),
-            cmd: PaletteCmd::Verb(UserCommand::Refresh),
-        },
-        PaletteItem {
-            label: "overview tab".into(),
-            cmd: PaletteCmd::Tab(Tab::Overview),
-        },
-        PaletteItem {
-            label: "pgbot tab".into(),
-            cmd: PaletteCmd::Tab(Tab::PgBot),
-        },
-        PaletteItem {
-            label: "inspect".into(),
-            cmd: PaletteCmd::Verb(UserCommand::Inspect),
-        },
-        PaletteItem {
-            label: "queries".into(),
-            cmd: PaletteCmd::Verb(UserCommand::Queries),
-        },
-        PaletteItem {
-            label: "indexes".into(),
-            cmd: PaletteCmd::Verb(UserCommand::Indexes),
-        },
-        PaletteItem {
-            label: "tables".into(),
-            cmd: PaletteCmd::Verb(UserCommand::Tables),
-        },
-        PaletteItem {
-            label: "why".into(),
-            cmd: PaletteCmd::Verb(UserCommand::Why),
-        },
-        PaletteItem {
-            label: "add database".into(),
-            cmd: PaletteCmd::AddDb,
-        },
-        PaletteItem {
-            label: "help".into(),
-            cmd: PaletteCmd::Help,
-        },
-        PaletteItem {
-            label: "quit".into(),
-            cmd: PaletteCmd::Quit,
-        },
-    ];
-    for (i, name) in db_names.iter().enumerate() {
-        v.push(PaletteItem {
+    let mut v: Vec<PaletteItem> = db_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| PaletteItem {
             label: format!("switch to {name}"),
             cmd: PaletteCmd::SwitchDb(i),
-        });
-    }
+        })
+        .collect();
+    let verbs = [
+        ("refresh", PaletteCmd::Verb(UserCommand::Refresh)),
+        ("overview tab", PaletteCmd::Tab(Tab::Overview)),
+        ("pgbot tab", PaletteCmd::Tab(Tab::PgBot)),
+        ("inspect", PaletteCmd::Verb(UserCommand::Inspect)),
+        ("queries", PaletteCmd::Verb(UserCommand::Queries)),
+        ("indexes", PaletteCmd::Verb(UserCommand::Indexes)),
+        ("tables", PaletteCmd::Verb(UserCommand::Tables)),
+        ("why", PaletteCmd::Verb(UserCommand::Why)),
+        ("add database", PaletteCmd::AddDb),
+        ("help", PaletteCmd::Help),
+        ("quit", PaletteCmd::Quit),
+    ];
+    v.extend(verbs.into_iter().map(|(label, cmd)| PaletteItem {
+        label: label.into(),
+        cmd,
+    }));
     v
 }
 

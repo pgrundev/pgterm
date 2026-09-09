@@ -4,8 +4,20 @@
 //! pgbot's own default view (its internal/render/gauges.go) so the two
 //! surfaces never disagree about the same database.
 
+use std::time::SystemTime;
+
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::Frame;
+
+use crate::action::View;
+use crate::app::DbState;
 use crate::format;
+use crate::health::{self, HealthStatus, RowStatus};
 use crate::model::{Context, Finding, CACHE_HIT_MIN_BLOCKS};
+use crate::screens::sidebar::badge_style;
 
 /// pgbot's confidence buckets, as words rather than a bare number.
 pub fn confidence_label(c: f64) -> &'static str {
@@ -260,6 +272,201 @@ pub fn gauges(ctx: &Context) -> [Gauge; 4] {
         rollbacks_gauge(ctx),
         idle_index_gauge(ctx),
     ]
+}
+
+fn kind_style(k: GaugeKind, measurable: bool) -> Style {
+    if !measurable {
+        return Style::default().fg(Color::DarkGray);
+    }
+    match k {
+        GaugeKind::Ok => Style::default().fg(Color::Green),
+        GaugeKind::Watch => Style::default().fg(Color::Yellow),
+        GaugeKind::Bad => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        GaugeKind::Info => Style::default().fg(Color::DarkGray),
+    }
+}
+
+const TILE_W: u16 = 16;
+const TILE_COUNT: u16 = 5;
+
+fn tile_rows(width: u16) -> u16 {
+    let per_row = (width / TILE_W).max(1);
+    TILE_COUNT.div_ceil(per_row)
+}
+
+fn draw_tiles(f: &mut Frame, area: Rect, tiles: &[(&'static str, String)]) {
+    if area.height == 0 {
+        return;
+    }
+    let per_row = (area.width / TILE_W).max(1) as usize;
+    for (i, (label, value)) in tiles.iter().enumerate() {
+        let row = (i / per_row) as u16;
+        let col = (i % per_row) as u16;
+        let rect = Rect::new(area.x + col * TILE_W, area.y + row * 3, TILE_W - 1, 3);
+        if rect.right() > area.right() || rect.bottom() > area.bottom() {
+            continue;
+        }
+        let block = Block::default().borders(Borders::ALL).title(Span::styled(
+            format!(" {label} "),
+            Style::default().fg(Color::DarkGray),
+        ));
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                format!(" {value}"),
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            inner,
+        );
+    }
+}
+
+/// The Overview body: header, status line, tiles, gauge strip, findings.
+pub fn draw(f: &mut Frame, area: Rect, db: &DbState) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let inner = area.inner(Margin::new(1, 0));
+    if inner.height < 3 {
+        return;
+    }
+
+    let mut head = vec![Span::styled(db.profile.name.clone(), bold)];
+    if let Some(stage) = db.profile.badge() {
+        head.push(Span::raw("  "));
+        head.push(Span::styled(stage.label(), badge_style(stage)));
+    }
+    let keys = "r refresh   2 pgbot ";
+    let used: usize = head.iter().map(|s| s.content.chars().count()).sum();
+    let gap = (inner.width as usize).saturating_sub(used + keys.chars().count());
+    head.push(Span::raw(" ".repeat(gap)));
+    head.push(Span::styled(keys, dim));
+
+    let ago = db
+        .last_checked
+        .map(|t| format::ago(t.elapsed()))
+        .unwrap_or_else(|| "—".into());
+    let status = match (&db.ctx, db.health) {
+        (_, HealthStatus::Unavailable) => {
+            let msg = db
+                .error
+                .as_ref()
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "unavailable".into());
+            Line::from(vec![
+                Span::styled("○ Unavailable", dim),
+                Span::raw(format!(" · {msg} · ")),
+                Span::styled("r retry", bold),
+            ])
+        }
+        (None, _) => Line::from(Span::styled(
+            "◌ Checking…",
+            Style::default().fg(Color::Cyan),
+        )),
+        (Some(ctx), _) => {
+            let mut parts = vec![format!(
+                "PostgreSQL {}",
+                version_digits(&ctx.server.version_text)
+                    .unwrap_or_else(|| ctx.server.major().to_string())
+            )];
+            if let Some(p) = provider_label(&ctx.server.provider) {
+                parts.push(p);
+            }
+            if ctx.server.uptime_seconds > 0 {
+                parts.push(format!(
+                    "up {}",
+                    format::duration_short(ctx.server.uptime_seconds)
+                ));
+            }
+            parts.push(format!("checked {ago}"));
+            Line::from(vec![
+                Span::styled("● Connected", Style::default().fg(Color::Green)),
+                Span::styled(format!(" · {}", parts.join(" · ")), dim),
+            ])
+        }
+    };
+
+    let tile_h = if db.ctx.is_some() {
+        tile_rows(inner.width) * 3
+    } else {
+        0
+    };
+    let [header_area, tiles_area, rest] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(tile_h),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
+    f.render_widget(
+        Paragraph::new(vec![Line::from(head), status, Line::from("")]),
+        header_area,
+    );
+
+    let Some(ctx) = &db.ctx else {
+        return;
+    };
+    draw_tiles(f, tiles_area, &tiles(ctx));
+
+    let mut body: Vec<Line> = vec![Line::from("")];
+    for g in gauges(ctx) {
+        let style = kind_style(g.kind, g.measurable);
+        body.push(Line::from(vec![
+            Span::styled(format!(" {:<9}  [", g.label), dim),
+            Span::styled(gauge_bar(g.share), style),
+            Span::raw(format!("]  {:<8}  ", g.value)),
+            Span::styled(g.status.clone(), style),
+        ]));
+    }
+    body.push(Line::from(""));
+
+    let att = attention_findings(ctx);
+    let headline = if att.is_empty() {
+        "no findings".to_string()
+    } else {
+        format!("{} findings need attention", att.len())
+    };
+    body.push(Line::from(vec![
+        Span::styled("PGBOT", bold),
+        Span::raw("   "),
+        Span::raw(headline),
+    ]));
+    let width = rest.width as usize;
+    for finding in att.iter().take(5) {
+        let (glyph, style) = if finding.severity == "critical" {
+            (
+                "✗",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            ("⚠", Style::default().fg(Color::Yellow))
+        };
+        let conf = format!("confidence {}", confidence_label(finding.confidence));
+        let title_w = width.saturating_sub(conf.len() + 5);
+        let title: String = finding.title.chars().take(title_w).collect();
+        let gap = width.saturating_sub(3 + title.chars().count() + conf.len());
+        body.push(Line::from(vec![
+            Span::styled(format!(" {glyph} "), style),
+            Span::raw(title),
+            Span::raw(" ".repeat(gap)),
+            Span::styled(conf, dim),
+        ]));
+    }
+    if att.len() > 5 {
+        body.push(Line::from(Span::styled(
+            format!(" … and {} more — 2 pgbot", att.len() - 5),
+            dim,
+        )));
+    }
+    let (rows, _) = health::categories(ctx, SystemTime::now());
+    for row in rows.iter().filter(|r| r.status == RowStatus::Ok) {
+        body.push(Line::from(vec![
+            Span::styled(" ✓ ", Style::default().fg(Color::Green)),
+            Span::raw(format!("{:<14}", row.name)),
+            Span::styled(row.metric.clone(), dim),
+        ]));
+    }
+    let scroll = db.scroll.get(&View::Inspect).copied().unwrap_or(0);
+    f.render_widget(Paragraph::new(body).scroll((scroll, 0)), rest);
 }
 
 #[cfg(test)]
