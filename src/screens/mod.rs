@@ -5,6 +5,7 @@ pub mod ask;
 pub mod health;
 pub mod indexes;
 pub mod inspect;
+pub mod overview;
 pub mod queries;
 pub mod states;
 pub mod tables;
