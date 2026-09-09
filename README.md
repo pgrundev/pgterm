@@ -47,10 +47,11 @@ cargo build --release
 ```
 
 Three pretend databases — healthy, warnings, and a blocked-locks incident —
-served by a fake pgbot from the test fixtures. Everything works: tabs,
-views 1–5, `r`, the command bar (`/ ask why did checkout get slower?`).
-The demo keeps its config under `$TMPDIR/pgterm-demo`, so your real
-configuration is untouched.
+served by a fake pgbot from the test fixtures. Everything works: the sidebar
+and its badges, both tabs, the gauges, the palette (`:`), the pgbot views,
+and the command bar (`/ ask why did checkout get slower?`). The demo keeps
+its config under `$TMPDIR/pgterm-demo`, so your real configuration is
+untouched.
 
 ## Install
 
