@@ -686,20 +686,20 @@ impl App {
                     typed.pop();
                 }
                 KeyCode::Char(c) => typed.push(c),
-                KeyCode::Enter => {
-                    if typed.trim() == name {
-                        db.sql_confirm = None;
-                        db.sql_running = true;
-                        db.sql_error = None;
-                        let sql = db.sql.text();
-                        let policy = db.profile.write_policy();
-                        return Some(vec![Effect::SpawnSql {
-                            db: selected,
-                            target: SqlTarget::Editor,
-                            sql,
-                            policy,
-                        }]);
-                    }
+                // Only the exact name runs it; anything else falls through
+                // and the prompt stays up.
+                KeyCode::Enter if typed.trim() == name => {
+                    db.sql_confirm = None;
+                    db.sql_running = true;
+                    db.sql_error = None;
+                    let sql = db.sql.text();
+                    let policy = db.profile.write_policy();
+                    return Some(vec![Effect::SpawnSql {
+                        db: selected,
+                        target: SqlTarget::Editor,
+                        sql,
+                        policy,
+                    }]);
                 }
                 _ => {}
             }
