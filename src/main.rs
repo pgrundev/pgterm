@@ -26,6 +26,10 @@ fn main() {
         }
         Invocation::Usage(msg) => cli::print_usage_error(&msg),
         Invocation::List => cli::cmd_list(),
+        Invocation::DefaultConfig => {
+            print!("{}", pgterm::config::DEFAULT_CONFIG_TEXT);
+            0
+        }
         Invocation::Remove(name) => cli::cmd_remove(&name),
         Invocation::Add(opts) => {
             let code = runtime().block_on(cli::cmd_add(&opts));

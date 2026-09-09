@@ -100,6 +100,25 @@ fn add_with_explicit_env_behaves_identically() {
 }
 
 #[test]
+fn add_stage_is_persisted_with_the_profile() {
+    let s = Setup::new("add-stage");
+    let out = run(s
+        .cmd(&[
+            "add",
+            "warehouse",
+            "--env",
+            "WH_DATABASE_URL",
+            "--stage",
+            "staging",
+        ])
+        .env("WH_DATABASE_URL", common::dsn("healthy")));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let cfg = config_text(&s);
+    assert!(cfg.contains("stage = \"staging\""), "{cfg}");
+    assert!(!cfg.contains("://"), "config leaked the DSN: {cfg}");
+}
+
+#[test]
 fn add_refuses_an_unset_env_var_and_saves_nothing() {
     let s = Setup::new("add-unset");
     let out = run(&mut s.cmd(&["add", "production", "--env", "DOES_NOT_EXIST"]));

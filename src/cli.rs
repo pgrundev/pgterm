@@ -2,7 +2,7 @@
 //! parsing for the binary. `add` validates the connection through a real
 //! pgbot probe BEFORE anything is persisted — a broken profile is never saved.
 
-use crate::config::TerminalConfig;
+use crate::config::{Stage, TerminalConfig};
 use crate::model::Context;
 use crate::runner::{self, ConnSource, PgbotCommand};
 use crate::sanitize::ErrorKind;
@@ -17,6 +17,8 @@ pub struct AddOptions {
     pub name: String,
     pub env: Option<String>,
     pub open: bool,
+    /// The environment badge to save with the profile; None = infer it.
+    pub stage: Option<Stage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,15 +30,18 @@ pub enum Invocation {
     },
     Add(AddOptions),
     List,
+    /// Print the annotated default config and exit.
+    DefaultConfig,
     Remove(String),
     Version,
     Usage(String),
 }
 
 const USAGE: &str = "usage: pgterm [--interval <dur>] [--no-monitor]
-       pgterm add <name> [--env <ENV_NAME>] [--open]
+       pgterm add <name> [--env <ENV_NAME>] [--stage prod|staging|dev|local] [--open]
        pgterm list
-       pgterm remove <name>";
+       pgterm remove <name>
+       pgterm --default-config";
 
 pub fn parse_args(args: &[String]) -> Invocation {
     let mut it = args.iter().peekable();
@@ -47,6 +52,7 @@ pub fn parse_args(args: &[String]) -> Invocation {
             let mut name = None;
             let mut env = None;
             let mut open = false;
+            let mut stage = None;
             while let Some(a) = it.next() {
                 match a.as_str() {
                     "--env" => match it.next() {
@@ -54,6 +60,14 @@ pub fn parse_args(args: &[String]) -> Invocation {
                         None => return Invocation::Usage("--env needs a value".into()),
                     },
                     "--open" => open = true,
+                    "--stage" => match it.next().and_then(|v| Stage::parse(v)) {
+                        Some(st) => stage = Some(st),
+                        None => {
+                            return Invocation::Usage(
+                                "--stage must be one of prod, staging, dev, local".into(),
+                            )
+                        }
+                    },
                     s if s.starts_with('-') => {
                         return Invocation::Usage(format!("unknown flag {s}"))
                     }
@@ -62,7 +76,12 @@ pub fn parse_args(args: &[String]) -> Invocation {
                 }
             }
             match name {
-                Some(name) => Invocation::Add(AddOptions { name, env, open }),
+                Some(name) => Invocation::Add(AddOptions {
+                    name,
+                    env,
+                    open,
+                    stage,
+                }),
                 None => Invocation::Usage("add needs a database name".into()),
             }
         }
@@ -95,6 +114,7 @@ pub fn parse_args(args: &[String]) -> Invocation {
                         }
                     },
                     "--no-monitor" => no_monitor = true,
+                    "--default-config" => return Invocation::DefaultConfig,
                     s => return Invocation::Usage(format!("unknown argument {s}")),
                 }
             }
@@ -230,7 +250,7 @@ pub async fn cmd_add(opts: &AddOptions) -> i32 {
         }
     }
 
-    if let Err(e) = cfg.add(&opts.name, &env_name) {
+    if let Err(e) = cfg.add_with_stage(&opts.name, &env_name, opts.stage) {
         eprintln!("pgterm: {e}\nNothing was saved.");
         return EXIT_FAILED;
     }
@@ -274,14 +294,32 @@ pub fn cmd_list() -> i32 {
         .chain(["CONNECTION".len()])
         .max()
         .unwrap_or(10);
-    println!("{:name_w$}  {:env_w$}  STATUS", "NAME", "CONNECTION");
+    let stage_of = |d: &crate::config::DatabaseProfile| {
+        d.badge().map(|s| s.label()).unwrap_or("—").to_string()
+    };
+    let stage_w = cfg
+        .databases
+        .iter()
+        .map(|d| stage_of(d).chars().count())
+        .chain(["STAGE".len()])
+        .max()
+        .unwrap_or(5);
+    println!(
+        "{:name_w$}  {:stage_w$}  {:env_w$}  STATUS",
+        "NAME", "STAGE", "CONNECTION"
+    );
     for d in &cfg.databases {
         let status = if env_is_set(&d.env) {
             "configured"
         } else {
             "env not set"
         };
-        println!("{:name_w$}  {:env_w$}  {status}", d.name, d.env);
+        println!(
+            "{:name_w$}  {:stage_w$}  {:env_w$}  {status}",
+            d.name,
+            stage_of(d),
+            d.env
+        );
     }
     EXIT_OK
 }
@@ -322,7 +360,8 @@ mod tests {
             Invocation::Add(AddOptions {
                 name: "prod".into(),
                 env: None,
-                open: false
+                open: false,
+                stage: None
             })
         );
         assert_eq!(
@@ -330,7 +369,8 @@ mod tests {
             Invocation::Add(AddOptions {
                 name: "prod".into(),
                 env: Some("PROD_URL".into()),
-                open: true
+                open: true,
+                stage: None
             })
         );
         assert!(matches!(parse_args(&s(&["add"])), Invocation::Usage(_)));
@@ -395,5 +435,31 @@ mod tests {
         assert_eq!(parse_duration_secs("45"), Some(45));
         assert_eq!(parse_duration_secs("soon"), None);
         assert_eq!(parse_duration_secs(""), None);
+    }
+
+    #[test]
+    fn add_accepts_a_stage_and_rejects_unknown_ones() {
+        match parse_args(&s(&["add", "prod", "--env", "P", "--stage", "prod"])) {
+            Invocation::Add(o) => assert_eq!(o.stage, Some(crate::config::Stage::Prod)),
+            other => panic!("{other:?}"),
+        }
+        match parse_args(&s(&["add", "prod", "--stage", "production"])) {
+            Invocation::Usage(msg) => {
+                assert!(msg.contains("prod, staging, dev, local"), "{msg}")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            parse_args(&s(&["add", "p", "--stage"])),
+            Invocation::Usage(_)
+        ));
+    }
+
+    #[test]
+    fn default_config_flag_is_its_own_invocation() {
+        assert_eq!(
+            parse_args(&s(&["--default-config"])),
+            Invocation::DefaultConfig
+        );
     }
 }
