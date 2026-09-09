@@ -66,6 +66,13 @@ pgterm and the pgbot it drives, so Homebrew trusts both from the tap:
 brew install pgrundev/tap/pgterm pgrundev/tap/pgbot
 ```
 
+On Windows, in PowerShell (install pgbot separately from
+[pgbot.dev](https://pgbot.dev)):
+
+```powershell
+irm https://pgterm.dev/install.ps1 | iex
+```
+
 Or build from source: `cargo build --release`.
 
 ## Quickstart

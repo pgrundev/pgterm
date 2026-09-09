@@ -11,9 +11,10 @@
    ```
 
 3. The `release` workflow builds native binaries for linux amd64/arm64
-   (musl, static) and macOS amd64/arm64, attaches
-   `pgterm_<version>_<os>_<arch>.tar.gz` + `checksums.txt` to a GitHub
-   release, then smoke-downloads and runs `--version` on linux and macOS.
+   (musl, static), macOS amd64/arm64 and Windows amd64, attaches
+   `pgterm_<version>_<os>_<arch>.tar.gz` (a `.zip` on Windows) +
+   `checksums.txt` to a GitHub release, then smoke-downloads and runs
+   `--version` on linux, macOS and Windows.
 
 4. The `homebrew` job renders `Formula/pgterm.rb` from those checksums
    (`packaging/homebrew/formula.sh`) and pushes it to
@@ -22,9 +23,10 @@
    and checks `--version`. Do not edit the formula in the tap by hand — the
    next release overwrites it.
 
-Windows is not shipped yet (crossterm supports it — revisit post-MVP). The
-test suite does run on Windows in CI (`tests/bin/fake_pgbot.rs` is the
-fixture there), so a Windows build is one matrix entry away.
+Windows ships as a zip from v0.2.0, installed by `install.ps1`
+(`irm https://pgterm.dev/install.ps1 | iex`). The test suite runs there too
+(`tests/bin/fake_pgbot.rs` is the fixture), and `smoke-windows` downloads,
+checksum-verifies and runs the published binary before a release is done.
 
 ## Homebrew: how the tap is wired
 
