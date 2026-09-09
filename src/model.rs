@@ -21,7 +21,7 @@ fn decode<'a, T: Deserialize<'a>>(json: &'a str, what: &str) -> Result<T, SafeEr
 /// with `var xs []T` — so a clean database sends `"findings": null` rather
 /// than `[]`. Struct-level `#[serde(default)]` only covers a *missing* key;
 /// this accepts an explicit null as the empty list too. (Issue #3.)
-fn null_as_empty<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+pub fn null_as_empty<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,

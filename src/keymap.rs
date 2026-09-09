@@ -16,6 +16,7 @@ pub enum KeyContext {
     Sidebar,
     PgBot,
     Overview,
+    Branches,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +88,12 @@ pub static KEYMAP: &[Binding] = &[
         "pgbot tab",
     ),
     b(
+        &["3"],
+        KeyContext::Main,
+        KeyAction::SetTab(Tab::Branches),
+        "branches tab",
+    ),
+    b(
         &["C-k", ":"],
         KeyContext::Main,
         KeyAction::Palette,
@@ -135,6 +142,12 @@ pub static KEYMAP: &[Binding] = &[
         KeyContext::Overview,
         KeyAction::Enter,
         "open pgbot findings",
+    ),
+    b(
+        &["Enter"],
+        KeyContext::Branches,
+        KeyAction::Enter,
+        "open the branch as a tab",
     ),
 ];
 
@@ -188,6 +201,7 @@ pub fn help_text() -> String {
         (KeyContext::Sidebar, "SIDEBAR"),
         (KeyContext::Overview, "OVERVIEW"),
         (KeyContext::PgBot, "PGBOT TAB"),
+        (KeyContext::Branches, "BRANCHES TAB"),
         (KeyContext::Global, "GENERAL"),
     ];
     let mut out = String::from("pgterm\n");

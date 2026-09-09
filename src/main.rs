@@ -158,6 +158,13 @@ fn perform(
                     let _ = tx.send(app::run_effect(bin, source, db, cmd, kind, sem).await);
                 });
             }
+            Effect::SpawnPgrun { db, cmd, open } => {
+                let bin = pgterm::pgrun::pgrun_bin();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(app::run_pgrun_effect(bin, db, cmd, open).await);
+                });
+            }
             Effect::SpawnProbe {
                 name,
                 source,

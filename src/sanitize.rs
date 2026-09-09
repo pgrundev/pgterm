@@ -106,6 +106,10 @@ pub enum ErrorKind {
     BadOutput,
     /// pgbot exited 64 — our invocation was malformed (a bug here, not there).
     Usage,
+    /// PGRUN_BIN (or pgrun on PATH) could not be spawned.
+    PgrunMissing,
+    /// pgrun ran and reported a failure (not logged in, no such project, …).
+    PgrunFailed,
 }
 
 /// An error safe to render: the message was redacted at construction, so no
@@ -140,6 +144,8 @@ impl fmt::Display for SafeError {
             ErrorKind::PgbotMissing => "pgbot not found",
             ErrorKind::BadOutput => "unexpected pgbot output",
             ErrorKind::Usage => "internal error (bad pgbot invocation)",
+            ErrorKind::PgrunMissing => "pgrun not found",
+            ErrorKind::PgrunFailed => "pgrun",
         };
         if self.message.is_empty() {
             write!(f, "{label}")?;

@@ -12,6 +12,7 @@ pub mod keymap;
 pub mod model;
 pub mod palette;
 pub mod parser;
+pub mod pgrun;
 pub mod runner;
 pub mod sanitize;
 pub mod screens;

@@ -181,6 +181,7 @@ Tab / S-Tab        focus sidebar / main pane
 ]                  next database
 1                  overview tab
 2                  pgbot tab
+3                  branches tab
 C-k / :            command palette
 /                  command bar (verbs, ask …)
 a                  add database
@@ -193,6 +194,9 @@ Enter              open the selected database
 
 OVERVIEW
 Enter              open pgbot findings
+
+BRANCHES TAB
+Enter              open the branch as a tab
 
 PGBOT TAB
 Left / h           previous pgbot view
@@ -211,7 +215,7 @@ against it too.
 
 - `Tab` / `Shift+Tab` now move between the sidebar and the main pane. `[` and
   `]` switch databases.
-- Number keys pick tabs (`1` Overview, `2` PgBot). Inside PgBot, `←`/`→` or
+- Number keys pick tabs (`1` Overview, `2` PgBot, `3` Branches). Inside PgBot, `←`/`→` or
   `h`/`l` step through Inspect · Queries · Indexes · Tables · Why.
 - `Ctrl-K` (or `:`) opens the command palette. `/` is still the command bar.
 
@@ -230,6 +234,26 @@ from the same JSON by the same rules so the two never disagree:
 Under them, the findings that need attention with pgbot's own confidence, then
 a `✓` line per subsystem that came back clean. Press `Enter` (or `2`) for the
 full report.
+
+## Branches
+
+When a database has a pgrun project, its branches appear in the sidebar and
+on the Branches tab:
+
+```toml
+[[databases]]
+name = "production"
+env = "PROD_DATABASE_URL"
+pgrun_project = "acme-api"   # `pgrun project list` shows your projects
+```
+
+`Enter` on a branch opens it as its own tab. The connection URL comes from
+pgrun at that moment, lives in memory for the session, and is never written
+to config — the tab is gone when you quit. Creating and deleting branches
+stays in the pgrun CLI, where the confirmations already live.
+
+Needs [pgrun](https://github.com/pgrundev/pgrun-cli) on your PATH (or
+`PGRUN_BIN`), logged in. Without it the tab says so instead of failing.
 
 ## Stages and badges
 

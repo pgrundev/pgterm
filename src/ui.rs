@@ -11,7 +11,7 @@ use ratatui::Frame;
 use crate::action::{Hit, Tab};
 use crate::app::{App, DbState, Focus};
 use crate::health::HealthStatus;
-use crate::screens::{self, overview, sidebar, states, tabs};
+use crate::screens::{self, branches, overview, sidebar, states, tabs};
 
 /// What the pointer is over gets underlined: the standard "this is clickable"
 /// affordance, and it survives a monochrome terminal.
@@ -108,6 +108,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(tab_body);
                 hits.extend(tabs::draw_subtabs(f, sub, db, app.hover.as_ref()));
                 screens::draw_body(f, rest, db);
+            }
+            Tab::Branches => {
+                hits.extend(branches::draw(f, tab_body, db, app.hover.as_ref()));
             }
         }
     }
@@ -930,5 +933,29 @@ mod tests {
         feed(&mut app, 0, WARN);
         feed(&mut app, 1, HEALTHY);
         println!("{}", render(&mut app, 120, 40));
+    }
+
+    /// Prints the Branches tab against whatever pgrun really returns:
+    /// `PGTERM_LIVE_PROJECT=jobsgpt cargo test --lib show_branches -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn show_branches() {
+        let Ok(project) = std::env::var("PGTERM_LIVE_PROJECT") else {
+            println!("set PGTERM_LIVE_PROJECT to try this");
+            return;
+        };
+        let mut app = app_with(&["production"]);
+        app.dbs[0].profile.pgrun_project = Some(project.clone());
+        let effects = app.set_tab(crate::action::Tab::Branches);
+        println!("effects: {effects:?}");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let action = rt.block_on(crate::app::run_pgrun_effect(
+            crate::pgrun::pgrun_bin(),
+            0,
+            crate::pgrun::PgrunCommand::List(project),
+            false,
+        ));
+        app.update(action);
+        println!("{}", render(&mut app, 120, 32));
     }
 }

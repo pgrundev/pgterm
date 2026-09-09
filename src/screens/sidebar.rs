@@ -110,6 +110,56 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) -> Vec<(Rect, Hit)> {
         hover_style(dim, app.hover == Some(Hit::OpenAdd)),
     )));
     hits.push((Rect::new(area.x, y, area.width, 1), Hit::OpenAdd));
+
+    // The selected database's branches, when it has a pgrun project.
+    if let Some(db) = app.dbs.get(app.selected) {
+        if db.profile.pgrun_project.is_some() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(" BRANCHES", dim)));
+            match db.branches.as_deref() {
+                Some(bs) if !bs.is_empty() => {
+                    for (i, b) in bs.iter().take(8).enumerate() {
+                        let y = area.y + lines.len() as u16;
+                        let (glyph, tone) = crate::screens::branches::branch_glyph(b);
+                        let right = if b.failed() {
+                            "failed".to_string()
+                        } else if b.in_progress() {
+                            b.status.clone()
+                        } else {
+                            crate::screens::branches::age(b.created_at.as_deref())
+                        };
+                        let name_w = inner_w.saturating_sub(6 + right.chars().count());
+                        let name: String = b.name.chars().take(name_w).collect();
+                        let pad = name_w.saturating_sub(name.chars().count());
+                        let style =
+                            hover_style(Style::default(), app.hover == Some(Hit::SelectBranch(i)));
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("  {glyph} "), Style::default().fg(tone)),
+                            Span::styled(format!("{name}{}", " ".repeat(pad)), style),
+                            Span::styled(format!("{right} "), dim),
+                        ]));
+                        hits.push((Rect::new(area.x, y, area.width, 1), Hit::SelectBranch(i)));
+                    }
+                    if bs.len() > 8 {
+                        lines.push(Line::from(Span::styled(
+                            format!("    … {} more — 3", bs.len() - 8),
+                            dim,
+                        )));
+                    }
+                }
+                Some(_) => lines.push(Line::from(Span::styled("    none yet", dim))),
+                None => lines.push(Line::from(Span::styled(
+                    if db.branches_loading {
+                        "    loading…"
+                    } else {
+                        "    3 to load"
+                    },
+                    dim,
+                ))),
+            }
+        }
+    }
+
     f.render_widget(Paragraph::new(lines), area);
     hits
 }

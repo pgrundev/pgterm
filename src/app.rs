@@ -19,6 +19,7 @@ use crate::keymap::{self, KeyAction, KeyContext};
 use crate::model::{Context, IndexesReport, WhyReport};
 use crate::palette::{self, PaletteCmd, PaletteItem, PaletteState};
 use crate::parser::UserCommand;
+use crate::pgrun::{self, Branch, PgrunCommand};
 use crate::runner::{self, ConnSource, PgbotCommand, RunOutcome};
 use crate::sanitize::SafeError;
 
@@ -88,6 +89,11 @@ pub struct DbState {
     pub tab: Tab,
     pub view: View,
     pub ctx: Option<Context>,
+    /// This database's pgrun branches, once fetched.
+    pub branches: Option<Vec<Branch>>,
+    pub branch_error: Option<SafeError>,
+    pub branch_cursor: usize,
+    pub branches_loading: bool,
     /// Non-suppressed finding ids from the latest check, sorted.
     pub findings_now: Option<Vec<String>>,
     /// The set that was on screen the last time the PgBot tab was viewed.
@@ -115,6 +121,10 @@ impl DbState {
             tab: Tab::Overview,
             view: View::Inspect,
             ctx: None,
+            branches: None,
+            branch_error: None,
+            branch_cursor: 0,
+            branches_loading: false,
             findings_now: None,
             findings_seen: None,
             indexes: None,
@@ -133,6 +143,7 @@ impl DbState {
             name: name.to_string(),
             env: String::new(),
             stage: None,
+            pgrun_project: None,
         });
         db.source = ConnSource::Session(url);
         db
@@ -288,15 +299,125 @@ impl App {
             return Vec::new();
         };
         db.tab = tab;
-        if tab == Tab::PgBot {
-            db.mark_pgbot_seen();
-            let view = db.view;
-            return self.set_view(view);
+        match tab {
+            Tab::PgBot => {
+                db.mark_pgbot_seen();
+                let view = db.view;
+                self.set_view(view)
+            }
+            Tab::Branches if db.branches.is_none() => self.refresh_branches(),
+            _ => Vec::new(),
         }
-        Vec::new()
     }
 
     /// Which key contexts apply right now, most specific first.
+    /// Ask pgrun for the selected database's branches. Needs a configured
+    /// project; nothing is spawned without one, and one call at a time.
+    pub fn refresh_branches(&mut self) -> Vec<Effect> {
+        let selected = self.selected;
+        let Some(db) = self.dbs.get_mut(selected) else {
+            return Vec::new();
+        };
+        let Some(project) = db.profile.pgrun_project.clone() else {
+            return Vec::new();
+        };
+        if db.branches_loading {
+            return Vec::new();
+        }
+        db.branches_loading = true;
+        db.branch_error = None;
+        vec![Effect::SpawnPgrun {
+            db: selected,
+            cmd: PgrunCommand::List(project),
+            open: false,
+        }]
+    }
+
+    /// Enter on a branch: fetch its connection URL, which only `branch get`
+    /// returns. The URL never touches config — it becomes a session tab.
+    pub fn open_selected_branch(&mut self) -> Vec<Effect> {
+        let selected = self.selected;
+        let Some(db) = self.dbs.get(selected) else {
+            return Vec::new();
+        };
+        let Some(project) = db.profile.pgrun_project.clone() else {
+            return Vec::new();
+        };
+        let Some(branch) = db
+            .branches
+            .as_ref()
+            .and_then(|bs| bs.get(db.branch_cursor))
+            .filter(|b| !b.in_progress() && !b.failed())
+        else {
+            return Vec::new();
+        };
+        vec![Effect::SpawnPgrun {
+            db: selected,
+            cmd: PgrunCommand::Get {
+                project,
+                branch: branch.name.clone(),
+            },
+            open: true,
+        }]
+    }
+
+    fn on_branch_opened(
+        &mut self,
+        db: usize,
+        result: Result<Box<Branch>, SafeError>,
+    ) -> Vec<Effect> {
+        let branch = match result {
+            Ok(b) => b,
+            Err(e) => {
+                if let Some(state) = self.dbs.get_mut(db) {
+                    state.branch_error = Some(e);
+                }
+                return Vec::new();
+            }
+        };
+        let Some(url) = branch.connection_url.clone() else {
+            if let Some(state) = self.dbs.get_mut(db) {
+                state.branch_error = Some(SafeError::new(
+                    crate::sanitize::ErrorKind::BadOutput,
+                    "pgrun returned no connection URL for that branch",
+                    None,
+                ));
+            }
+            return Vec::new();
+        };
+        // Name the tab after the branch, disambiguated against what is open.
+        let base = format!(
+            "{}/{}",
+            self.dbs
+                .get(db)
+                .map(|d| d.profile.name.as_str())
+                .unwrap_or("branch"),
+            branch.name
+        );
+        let mut name = base.clone();
+        let mut n = 2;
+        while self.dbs.iter().any(|d| d.profile.name == name) {
+            name = format!("{base}-{n}");
+            n += 1;
+        }
+        let mut state = DbState::session(&name, url);
+        state.profile.stage = Some(crate::config::Stage::Dev);
+        self.dbs.push(state);
+        let idx = self.dbs.len() - 1;
+        self.selected = idx;
+        self.pane = Pane::Main;
+        self.dbs[idx].running.insert(CmdKind::Monitor);
+        vec![Effect::Spawn {
+            db: idx,
+            cmd: PgbotCommand::Monitor,
+            kind: CmdKind::Monitor,
+        }]
+    }
+
+    fn on_branches_tab(&self) -> bool {
+        self.dbs.get(self.selected).map(|d| d.tab) == Some(Tab::Branches)
+    }
+
     fn key_contexts(&self) -> Vec<KeyContext> {
         let mut v = Vec::with_capacity(2);
         if self.pane == Pane::Sidebar {
@@ -305,6 +426,7 @@ impl App {
             v.push(match db.tab {
                 Tab::Overview => KeyContext::Overview,
                 Tab::PgBot => KeyContext::PgBot,
+                Tab::Branches => KeyContext::Branches,
             });
         }
         v.push(KeyContext::Main);
@@ -326,6 +448,22 @@ impl App {
                 self.on_check_finished(db, kind, result);
                 Vec::new()
             }
+            Action::BranchesFinished { db, result } => {
+                if let Some(state) = self.dbs.get_mut(db) {
+                    state.branches_loading = false;
+                    match result {
+                        Ok(bs) => {
+                            state.branch_cursor =
+                                state.branch_cursor.min(bs.len().saturating_sub(1));
+                            state.branches = Some(bs);
+                            state.branch_error = None;
+                        }
+                        Err(e) => state.branch_error = Some(e),
+                    }
+                }
+                Vec::new()
+            }
+            Action::BranchOpened { db, result } => self.on_branch_opened(db, result),
             Action::ProbeFinished {
                 name,
                 source,
@@ -546,6 +684,7 @@ impl App {
                     name: name.to_string(),
                     env: env_name,
                     stage,
+                    pgrun_project: None,
                 }));
                 let idx = self.dbs.len() - 1;
                 self.selected = idx;
@@ -628,6 +767,10 @@ impl App {
                     if self.selected > 0 {
                         self.select_db(self.selected - 1);
                     }
+                } else if self.on_branches_tab() {
+                    if let Some(db) = self.dbs.get_mut(self.selected) {
+                        db.branch_cursor = db.branch_cursor.saturating_sub(1);
+                    }
                 } else {
                     self.scroll_by(-1);
                 }
@@ -637,6 +780,13 @@ impl App {
                 if self.pane == Pane::Sidebar {
                     if self.selected + 1 < self.dbs.len() {
                         self.select_db(self.selected + 1);
+                    }
+                } else if self.on_branches_tab() {
+                    if let Some(db) = self.dbs.get_mut(self.selected) {
+                        let last = db.branches.as_ref().map(|b| b.len()).unwrap_or(0);
+                        if db.branch_cursor + 1 < last {
+                            db.branch_cursor += 1;
+                        }
                     }
                 } else {
                     self.scroll_by(1);
@@ -648,6 +798,8 @@ impl App {
                     // The sidebar picked a database; hand the keys to the body.
                     self.pane = Pane::Main;
                     Vec::new()
+                } else if self.on_branches_tab() {
+                    self.open_selected_branch()
                 } else {
                     // Overview: open the findings behind the summary.
                     if let Some(db) = self.dbs.get_mut(self.selected) {
@@ -1038,6 +1190,12 @@ impl App {
             }
             Some(Hit::SetView(v)) if self.focus == Focus::Main => self.set_view(v),
             Some(Hit::SetTab(t)) if self.focus == Focus::Main => self.set_tab(t),
+            Some(Hit::SelectBranch(i)) if self.focus == Focus::Main => {
+                if let Some(db) = self.dbs.get_mut(self.selected) {
+                    db.branch_cursor = i;
+                }
+                self.open_selected_branch()
+            }
             Some(Hit::OpenPalette) if self.focus == Focus::Main => self.open_palette(),
             Some(Hit::PaletteItem(i)) if self.focus == Focus::Palette => {
                 if let Some(p) = self.palette.as_mut() {
@@ -1112,6 +1270,12 @@ impl App {
     /// identical in-flight job.
     pub fn refresh_selected(&mut self) -> Vec<Effect> {
         let selected = self.selected;
+        if self.dbs.get(selected).map(|d| d.tab) == Some(Tab::Branches) {
+            if let Some(db) = self.dbs.get_mut(selected) {
+                db.branches = None;
+            }
+            return self.refresh_branches();
+        }
         let Some(db) = self.dbs.get_mut(selected) else {
             return Vec::new();
         };
@@ -1201,6 +1365,19 @@ pub async fn run_effect(
 
 /// Performs one SpawnProbe effect for the add popup.
 #[allow(clippy::too_many_arguments)]
+/// Perform one pgrun call and turn it back into an Action.
+pub async fn run_pgrun_effect(bin: PathBuf, db: usize, cmd: PgrunCommand, open: bool) -> Action {
+    let timeout = pgrun::default_timeout(&cmd);
+    let out = pgrun::run_pgrun(&bin, &cmd, timeout).await;
+    if open {
+        let result = out.and_then(|o| pgrun::decode_branch(&o.stdout).map(Box::new));
+        Action::BranchOpened { db, result }
+    } else {
+        let result = out.and_then(|o| pgrun::decode_list(&o.stdout));
+        Action::BranchesFinished { db, result }
+    }
+}
+
 pub async fn run_probe(
     pgbot_bin: PathBuf,
     name: String,

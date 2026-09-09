@@ -37,12 +37,16 @@ impl View {
 pub enum Tab {
     Overview,
     PgBot,
+    Branches,
 }
 
 impl Tab {
     /// The tab row: number key ↔ tab.
-    pub const NUMBERED: [(char, Tab, &'static str); 2] =
-        [('1', Tab::Overview, "Overview"), ('2', Tab::PgBot, "PgBot")];
+    pub const NUMBERED: [(char, Tab, &'static str); 3] = [
+        ('1', Tab::Overview, "Overview"),
+        ('2', Tab::PgBot, "PgBot"),
+        ('3', Tab::Branches, "Branches"),
+    ];
 }
 
 /// Which pane holds keyboard focus while `Focus::Main`.
@@ -83,6 +87,16 @@ pub enum Action {
         kind: CmdKind,
         result: Result<StoredResult, SafeError>,
     },
+    /// A pgrun branch call finished for one database.
+    BranchesFinished {
+        db: usize,
+        result: Result<Vec<crate::pgrun::Branch>, SafeError>,
+    },
+    /// `branch get` finished: the branch carries its connection URL.
+    BranchOpened {
+        db: usize,
+        result: Result<Box<crate::pgrun::Branch>, SafeError>,
+    },
     /// A popup-driven probe finished (the database does not exist yet).
     ProbeFinished {
         name: String,
@@ -108,6 +122,13 @@ pub enum Effect {
         cmd: PgbotCommand,
         kind: CmdKind,
     },
+    /// Ask pgrun for a database's branches, or for one branch's URL.
+    SpawnPgrun {
+        db: usize,
+        cmd: crate::pgrun::PgrunCommand,
+        /// Set when the answer should open the branch as a session tab.
+        open: bool,
+    },
     SpawnProbe {
         name: String,
         source: ConnSource,
@@ -124,6 +145,8 @@ pub enum Hit {
     OpenAdd,
     SetView(View),
     SetTab(Tab),
+    /// Row index within the selected database's branch list.
+    SelectBranch(usize),
     OpenPalette,
     /// Row index within the palette's currently filtered list.
     PaletteItem(usize),
