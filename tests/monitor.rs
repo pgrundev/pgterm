@@ -66,7 +66,7 @@ async fn three_databases_monitor_independently() {
 
     // Independence: each db kept its own evidence.
     assert!(app.dbs[0].ctx.as_ref().unwrap().findings.is_empty());
-    assert_eq!(app.dbs[1].ctx.as_ref().unwrap().findings.len(), 2);
+    assert_eq!(app.dbs[1].ctx.as_ref().unwrap().findings.len(), 3);
     assert!(app.dbs[2].ctx.is_none());
     let err = app.dbs[2]
         .error
