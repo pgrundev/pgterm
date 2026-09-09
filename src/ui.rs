@@ -13,6 +13,16 @@ use crate::app::{App, DbState, Focus};
 use crate::health::HealthStatus;
 use crate::screens::{self, overview, sidebar, states, tabs};
 
+/// What the pointer is over gets underlined: the standard "this is clickable"
+/// affordance, and it survives a monochrome terminal.
+pub fn hover_style(base: Style, hovered: bool) -> Style {
+    if hovered {
+        base.add_modifier(Modifier::UNDERLINED)
+    } else {
+        base
+    }
+}
+
 /// Status glyph + tone for a database tab. Shape differs by state, never
 /// color alone: ● healthy, ! warning/critical, ○ unavailable, ◌ checking.
 pub fn tab_glyph(db: &DbState) -> (&'static str, Color) {
@@ -96,7 +106,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Tab::PgBot => {
                 let [sub, rest] =
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(tab_body);
-                hits.extend(tabs::draw_subtabs(f, sub, db));
+                hits.extend(tabs::draw_subtabs(f, sub, db, app.hover.as_ref()));
                 screens::draw_body(f, rest, db);
             }
         }
@@ -138,7 +148,10 @@ fn draw_top_bar(f: &mut Frame, area: Rect, app: &mut App) {
     let gap = (area.width as usize).saturating_sub(used + right.len());
     spans.push(Span::raw(" ".repeat(gap)));
     let x = area.x + (used + gap) as u16;
-    spans.push(Span::styled(right, dim));
+    spans.push(Span::styled(
+        right,
+        hover_style(dim, app.hover == Some(Hit::OpenPalette)),
+    ));
     app.hitmap
         .push((Rect::new(x, area.y, 12, 1), Hit::OpenPalette));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -177,6 +190,7 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &mut App) {
             style = style.add_modifier(Modifier::BOLD);
         }
         // Name in the tab style, glyph in its tone on the same background.
+        let style = hover_style(style, app.hover == Some(Hit::SelectDb(i)));
         spans.push(Span::styled(format!(" {} ", db.profile.name), style));
         spans.push(Span::styled(format!("{glyph} "), style.fg(tone)));
         hits.push((Rect::new(x, area.y, width, 1), Hit::SelectDb(i)));
@@ -187,7 +201,10 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &mut App) {
     let add_label = " + Add DB ";
     spans.push(Span::styled(
         add_label,
-        Style::default().fg(Color::DarkGray),
+        hover_style(
+            Style::default().fg(Color::DarkGray),
+            app.hover == Some(Hit::OpenAdd),
+        ),
     ));
     hits.push((
         Rect::new(x, area.y, add_label.chars().count() as u16, 1),
@@ -272,6 +289,7 @@ fn draw_palette(f: &mut Frame, area: Rect, app: &App) -> Vec<(Rect, Hit)> {
         } else {
             Style::default()
         };
+        let style = hover_style(style, app.hover == Some(Hit::PaletteItem(row)));
         lines.push(Line::from(Span::styled(
             format!(" {} ", items[*idx].label),
             style,

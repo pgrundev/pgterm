@@ -204,6 +204,9 @@ pub struct App {
     pub size: (u16, u16),
     /// Interactive regions, rebuilt by every draw pass.
     pub hitmap: Vec<(Rect, Hit)>,
+    /// What the pointer is currently over, so the draw pass can show that it
+    /// is clickable. Set from mouse motion, cleared when it leaves.
+    pub hover: Option<Hit>,
     pub version_note: Option<String>,
 }
 
@@ -241,6 +244,7 @@ impl App {
             pgbot_bin: runner::pgbot_bin(),
             size: (0, 0),
             hitmap: Vec::new(),
+            hover: None,
             version_note: None,
         }
     }
@@ -1004,20 +1008,24 @@ impl App {
         }
     }
 
+    /// The interactive region under a point, if any.
+    fn hit_at(&self, col: u16, row: u16) -> Option<Hit> {
+        self.hitmap
+            .iter()
+            .find(|(r, _)| col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height)
+            .map(|(_, h)| h.clone())
+    }
+
     fn handle_mouse(&mut self, m: MouseEvent) -> Vec<Effect> {
+        // Motion only updates what looks clickable; it never acts.
+        if matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
+            self.hover = self.hit_at(m.column, m.row);
+            return Vec::new();
+        }
         if !matches!(m.kind, MouseEventKind::Down(_)) {
             return Vec::new();
         }
-        let hit = self
-            .hitmap
-            .iter()
-            .find(|(r, _)| {
-                m.column >= r.x
-                    && m.column < r.x + r.width
-                    && m.row >= r.y
-                    && m.row < r.y + r.height
-            })
-            .map(|(_, h)| h.clone());
+        let hit = self.hit_at(m.column, m.row);
         match hit {
             Some(Hit::SelectDb(i)) => {
                 self.select_db(i);
@@ -2173,5 +2181,43 @@ mod tests {
         std::env::remove_var("STAGE_TEST_URL");
         std::env::remove_var("PGTERM_CONFIG");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn motion_marks_what_is_clickable_without_acting() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut a = app(2);
+        // The draw pass owns the hitmap; fake one region for the test.
+        a.hitmap = vec![
+            (Rect::new(0, 0, 10, 1), Hit::SelectDb(1)),
+            (Rect::new(0, 1, 10, 1), Hit::OpenAdd),
+        ];
+        let moved = |col, row| {
+            Action::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: col,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert!(a.hover.is_none());
+        let effects = a.update(moved(3, 0));
+        assert_eq!(a.hover, Some(Hit::SelectDb(1)));
+        assert!(effects.is_empty(), "hovering must never act");
+        assert_eq!(a.selected, 0, "and must not select");
+        a.update(moved(3, 1));
+        assert_eq!(a.hover, Some(Hit::OpenAdd));
+        assert!(a.popup.is_none(), "hovering the add row opens nothing");
+        a.update(moved(50, 9));
+        assert!(a.hover.is_none(), "off every region clears the hover");
+
+        // A real click still acts.
+        a.update(Action::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(a.selected, 1);
     }
 }

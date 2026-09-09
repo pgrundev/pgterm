@@ -14,7 +14,7 @@ use crate::config::Stage;
 use crate::format;
 use crate::health::HealthStatus;
 use crate::screens::overview::attention_findings;
-use crate::ui::tab_glyph;
+use crate::ui::{hover_style, tab_glyph};
 
 /// Sidebar width including the rule column the layout puts beside it.
 pub const WIDTH: u16 = 26;
@@ -81,6 +81,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) -> Vec<(Rect, Hit)> {
         if db.attention {
             style = style.add_modifier(Modifier::BOLD);
         }
+        style = hover_style(style, app.hover == Some(Hit::SelectDb(i)));
         let mut spans = vec![
             Span::styled(format!(" {cursor}"), style),
             Span::styled(format!("{glyph} "), style.fg(tone)),
@@ -104,7 +105,10 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) -> Vec<(Rect, Hit)> {
         }
     }
     let y = area.y + lines.len() as u16;
-    lines.push(Line::from(Span::styled(" + Add database", dim)));
+    lines.push(Line::from(Span::styled(
+        " + Add database",
+        hover_style(dim, app.hover == Some(Hit::OpenAdd)),
+    )));
     hits.push((Rect::new(area.x, y, area.width, 1), Hit::OpenAdd));
     f.render_widget(Paragraph::new(lines), area);
     hits
