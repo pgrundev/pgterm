@@ -6,7 +6,7 @@ monitors every database you care about in one place, powered by
 
 ```
  pgterm   ▸ production  PROD                                                                        ^K commands  ? help
- DATABASES               │  1 Overview   2 PgBot                                               ! PostgreSQL 17 · 0s ago
+ DATABASES               │  1 Overview   2 PgBot   3 SQL   4 Data   5 Branches                 ! PostgreSQL 17 · 0s ago
                          │──────────────────────────────────────────────────────────────────────────────────────────────
   ! production      PROD │ production  PROD                                                        r refresh   2 pgbot
     2 indexes with zero  │ ● Connected · PostgreSQL 17.4 · RDS · up 10d · checked 0s ago
@@ -33,8 +33,11 @@ monitors every database you care about in one place, powered by
 
 One row per database in the sidebar, badged by environment. pgterm checks
 them all in the background and flags the one that needs attention without
-stealing focus from the one you're looking at. Overview answers "is this
-database healthy" at a glance; the PgBot tab has the full diagnostics.
+stealing focus from the one you're looking at.
+
+Five tabs per database: **Overview** answers "is this healthy" at a glance,
+**PgBot** has the full diagnostics, **SQL** runs a query, **Data** browses
+schemas and tables, and **Branches** lists the database's pgrun branches.
 
 Below 100 columns the sidebar collapses to a tab strip and everything else
 stays put, so pgterm still works in a split pane.

@@ -66,3 +66,23 @@ to eyeball a release:
 gh release download v0.1.3 -R pgrundev/pgterm -p checksums.txt
 sh packaging/homebrew/formula.sh 0.1.3 checksums.txt
 ```
+
+## Tests that need something live
+
+Most of the suite runs anywhere. Four tests are `#[ignore]`d because they
+need something real, and CI does not run them:
+
+```bash
+# SQL and Data against a real database
+PGTERM_TEST_DATABASE_URL='postgres://...' cargo test --lib live_ -- --ignored --nocapture
+
+# Branches against a real pgrun project
+PGTERM_LIVE_PROJECT=<slug> cargo test --lib show_branches -- --ignored --nocapture
+
+# Eyeball the shell and the SQL/Data tabs
+cargo test --lib show_shell -- --ignored --nocapture
+```
+
+Run the first two before a release that touches `db.rs` or `pgrun.rs`: they
+are what caught read-only not being enforced, `-1` masquerading as a row
+count, and the internal `"char"` type reading as NULL.
