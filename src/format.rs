@@ -126,6 +126,25 @@ pub fn parse_rfc3339(s: &str) -> Option<SystemTime> {
     Some(UNIX_EPOCH + Duration::new(secs as u64, nanos))
 }
 
+/// One unit, no decimals: how long something has been the case. "12d", "3h".
+pub fn duration_short(secs: i64) -> String {
+    let s = secs.max(0);
+    if s >= 86_400 {
+        format!("{}d", s / 86_400)
+    } else if s >= 3_600 {
+        format!("{}h", s / 3_600)
+    } else if s >= 60 {
+        format!("{}m", s / 60)
+    } else {
+        format!("{s}s")
+    }
+}
+
+/// A 0..1 ratio as a percentage with one decimal, the way pgbot prints it.
+pub fn pct(v: f64) -> String {
+    format!("{:.1}%", v * 100.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +196,21 @@ mod tests {
         ] {
             assert!(parse_rfc3339(s).is_none(), "{s}");
         }
+    }
+
+    #[test]
+    fn duration_short_picks_the_largest_unit() {
+        assert_eq!(duration_short(9), "9s");
+        assert_eq!(duration_short(2460), "41m");
+        assert_eq!(duration_short(3 * 3600 + 5), "3h");
+        assert_eq!(duration_short(12 * 86400 + 3600), "12d");
+        assert_eq!(duration_short(-5), "0s");
+    }
+
+    #[test]
+    fn pct_has_one_decimal() {
+        assert_eq!(pct(0.992), "99.2%");
+        assert_eq!(pct(0.0), "0.0%");
+        assert_eq!(pct(1.0), "100.0%");
     }
 }

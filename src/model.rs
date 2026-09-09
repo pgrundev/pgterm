@@ -36,6 +36,7 @@ pub struct Context {
     pub schema_version: String,
     pub collected_at: Option<String>,
     pub server: Server,
+    pub window: Option<Window>,
     pub limits: Option<Limits>,
     pub health: Option<Health>,
     pub activity: Option<Activity>,
@@ -61,6 +62,10 @@ pub struct Server {
     pub version_text: String,
     pub database: String,
     pub has_pg_monitor: bool,
+    /// Detected managed platform: rds, aurora, cloudsql, azure, supabase,
+    /// neon — empty when pgbot could not tell.
+    pub provider: String,
+    pub uptime_seconds: i64,
 }
 
 impl Server {
@@ -77,6 +82,22 @@ impl Server {
         } else {
             self.version_text.clone()
         }
+    }
+}
+
+/// The stats window pgbot's counters cover. A window younger than 15 minutes
+/// is "cold": counter-based signals (unused indexes) are not trustworthy yet.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Window {
+    pub window_age_seconds: Option<i64>,
+}
+
+impl Window {
+    pub const COLD_THRESHOLD_SECONDS: i64 = 900;
+
+    pub fn cold(&self) -> bool {
+        matches!(self.window_age_seconds, Some(s) if s < Self::COLD_THRESHOLD_SECONDS)
     }
 }
 
@@ -97,6 +118,8 @@ pub struct Health {
     pub cache_hit_ratio: Option<f64>,
     #[serde(rename = "cache_blocks_sampled")]
     pub cache_blocks: Option<i64>,
+    /// Rolled-back share of transactions over the sample window.
+    pub rollback_ratio: Option<f64>,
 }
 
 impl Health {
@@ -109,6 +132,7 @@ impl Health {
 #[serde(default)]
 pub struct Activity {
     pub total: i64,
+    pub active: i64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -316,7 +340,7 @@ mod tests {
         assert!(c.findings.is_empty());
 
         let w = Context::decode(WARN).unwrap();
-        assert_eq!(w.findings.len(), 2);
+        assert_eq!(w.findings.len(), 3);
         assert_eq!(w.indexes.as_ref().unwrap().unused.len(), 2);
 
         let cr = Context::decode(CRITICAL).unwrap();
@@ -338,6 +362,7 @@ mod tests {
         let h = Health {
             cache_hit_ratio: Some(0.5),
             cache_blocks: Some(100),
+            rollback_ratio: None,
         };
         assert!(!h.cache_hit_usable(), "100 blocks is noise, not signal");
     }
@@ -411,5 +436,23 @@ mod tests {
     fn garbage_is_bad_output_not_a_panic() {
         let err = Context::decode("pgbot exploded").unwrap_err();
         assert_eq!(err.kind, crate::sanitize::ErrorKind::BadOutput);
+    }
+
+    #[test]
+    fn overview_fields_decode_with_defaults() {
+        let c = Context::decode(
+            r#"{"server":{"provider":"rds","uptime_seconds":1036800},"activity":{"total":24,"active":6},
+                "health":{"rollback_ratio":0.12},"window":{"window_age_seconds":120}}"#,
+        )
+        .unwrap();
+        assert_eq!(c.server.provider, "rds");
+        assert_eq!(c.server.uptime_seconds, 1_036_800);
+        assert_eq!(c.activity.unwrap().active, 6);
+        assert_eq!(c.health.unwrap().rollback_ratio, Some(0.12));
+        assert!(c.window.unwrap().cold());
+        let c = Context::decode(r#"{"window":{"window_age_seconds":86400}}"#).unwrap();
+        assert!(!c.window.unwrap().cold());
+        let c = Context::decode("{}").unwrap();
+        assert!(c.window.is_none() && c.server.provider.is_empty());
     }
 }

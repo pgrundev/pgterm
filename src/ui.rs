@@ -386,9 +386,11 @@ mod tests {
         // Switch to staging: its dashboard shows the warn rows.
         app.select_db(1);
         let s = render(&mut app, 100, 30);
-        assert!(s.contains("94 / 100"), "{s}");
+        assert!(s.contains("91 / 100"), "{s}");
         assert!(s.contains("2 unused · 20 GiB"), "{s}");
         assert!(s.contains("2 regressions"), "{s}");
+        // The rollback finding maps to no category row, so the category
+        // summary still counts two — the findings list below shows all three.
         assert!(s.contains("2 warnings"), "{s}");
     }
 
