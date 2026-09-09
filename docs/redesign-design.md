@@ -152,13 +152,36 @@ tiles). Sections top to bottom:
    `3h`, `41m`). Unavailable: `○ Unavailable · <sanitized error> · r retry`.
    Checking with no cache: `◌ Checking…`.
 3. **Tiles**: `PostgreSQL`, `Connections` (`84 / 300` from limits),
-   `Active` (`activity.active`), `Cache hit` (`99.2%`, or `—` below
-   `CACHE_HIT_MIN_BLOCKS`), `Size` (`tables.db_size_bytes`, `format::bytes`),
-   `Uptime`. Each tile is a 3-row bordered box: dim label, bold value.
-   Tiles flow left to right and wrap to a second row when the pane is
-   narrower than the sum of their widths; a section that has no data shows
-   `—`. (Slice 2 swaps `Uptime` for `Latency` and adds `Tables`, `Schemas`.)
-4. **Findings summary**: `PGBOT   N findings need attention` where N counts
+   `Active` (`activity.active`), `Size` (`tables.db_size_bytes`,
+   `format::bytes`), `Uptime`. Each tile is a 3-row bordered box: dim
+   label, bold value. Tiles flow left to right and wrap to a second row when
+   the pane is narrower than the sum of their widths; a section that has no
+   data shows `—`. (Slice 2 swaps `Uptime` for `Latency` and adds `Tables`,
+   `Schemas`.)
+4. **Gauge strip**: the same four gauges pgbot's own default view shows
+   (pgbot PR #43, `internal/render/gauges.go`), computed from the JSON by the
+   same rules so the two surfaces never disagree:
+
+   ```
+   cache hit  [████████████████████]  99.2%     ok
+   lock wait  [░░░░░░░░░░░░░░░░░░░░]  —         ok
+   rollbacks  [██░░░░░░░░░░░░░░░░░░]  12.0%     watch
+   idle idx   [██████░░░░░░░░░░░░░░]  43.0 GiB  review
+   ```
+
+   Twenty cells, rounded to the nearest cell with a one-cell minimum for a
+   non-zero value; the status word comes from the finding that grades the
+   signal (`low_cache_hit`, `high_rollback_ratio`, `unused_indexes`), never
+   from a threshold of pgterm's own. Cache hit is `— thin sample` below
+   `CACHE_HIT_MIN_BLOCKS`; rollbacks needs `health.rollback_ratio`
+   (model addition); idle idx sums zero-scan `indexes.unused` bytes over
+   `tables.db_size_bytes` and reads `— window < 15m` in a cold window
+   (`window.window_age_seconds`, model addition). Lock wait: pgterm runs
+   pgbot without wait sampling, so the value is `—` and the status is `ok`
+   or `N blocked` from `locks.blocked_count` — exactly what pgbot renders
+   without a profile. Bar colour follows the status; unmeasurable rows are
+   dim. Text carries the meaning; the bar is redundant with the value.
+5. **Findings summary**: `PGBOT   N findings need attention` where N counts
    non-suppressed `warning` + `critical` findings; `no findings` when zero.
    Then up to five finding rows, critical first: glyph (`✗` red for
    critical, `⚠` yellow for warning), title, and right-aligned
@@ -238,8 +261,10 @@ palette is a superset of the bar. The parser gains the verbs `overview` and
 ### Model additions (`model.rs`)
 
 `Server.provider: String`, `Server.uptime_seconds: i64`,
-`Activity.active: i64` — all `#[serde(default)]`; fixtures gain the fields.
-`format.rs` gains `duration_short` and `bytes` if missing.
+`Activity.active: i64`, `Health.rollback_ratio: Option<f64>`,
+`Window { window_age_seconds: Option<i64> }` — all `#[serde(default)]`;
+fixtures gain the fields. `format.rs` gains `duration_short` and `bytes` if
+missing.
 
 ### Tests (slice 1)
 
@@ -259,7 +284,9 @@ palette is a superset of the bar. The parser gains the verbs `overview` and
   tiles from the healthy fixture with the expected values; findings summary
   shows critical first with confidence labels; unavailable status line.
 - `screens/overview.rs`: pure helpers (`confidence_label`, version digits,
-  finding ordering) unit-tested.
+  finding ordering) unit-tested; the gauge helpers (`gauge_cells` rounding
+  table, each gauge's ok / graded / unmeasurable states, cold window,
+  `N blocked`) mirror pgbot's `gauges_test.go` cases so the two stay in step.
 - `keymap.rs`: every binding has a description; no duplicate key within a
   context; the help text lists every binding; the README key table matches.
 - `app.rs`: PgBot tab bold-until-viewed; toast appears for an unselected
