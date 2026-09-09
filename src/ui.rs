@@ -475,10 +475,9 @@ mod tests {
 
     #[test]
     fn queries_and_tables_views_render_the_context() {
-        use crossterm::event::KeyCode;
         let mut app = app_with(&["prod"]);
         feed(&mut app, 0, WARN);
-        press(&mut app, KeyCode::Char('2'));
+        app.set_view(crate::action::View::Queries);
         let s = render(&mut app, 110, 32);
         assert!(s.contains("QUERIES"), "{s}");
         assert!(s.contains("18.2k"), "calls column: {s}");
@@ -488,7 +487,7 @@ mod tests {
             "scrubbed text passes through: {s}"
         );
 
-        press(&mut app, KeyCode::Char('4'));
+        app.set_view(crate::action::View::Tables);
         let s = render(&mut app, 110, 32);
         assert!(s.contains("TABLES"), "{s}");
         assert!(s.contains("84 GiB"), "{s}");

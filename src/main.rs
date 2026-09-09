@@ -125,6 +125,13 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, mut app: App) -> an
             effects.extend(app.update(a));
         }
         perform(&app, effects, &tx, &sem);
+        // A toast for a database you are not looking at may also ring the bell.
+        if app.take_bell() {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x07");
+            let _ = out.flush();
+        }
         if app.should_quit {
             return Ok(());
         }

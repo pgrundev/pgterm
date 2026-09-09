@@ -120,6 +120,10 @@ pub enum Hit {
     SelectDb(usize),
     OpenAdd,
     SetView(View),
+    SetTab(Tab),
+    OpenPalette,
+    /// Row index within the palette's currently filtered list.
+    PaletteItem(usize),
     PopupTest,
     PopupAdd,
     PopupCancel,

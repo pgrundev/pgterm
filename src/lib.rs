@@ -10,6 +10,7 @@ pub mod format;
 pub mod health;
 pub mod keymap;
 pub mod model;
+pub mod palette;
 pub mod parser;
 pub mod runner;
 pub mod sanitize;

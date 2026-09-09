@@ -12,10 +12,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 use ratatui::layout::Rect;
 use tokio::sync::Semaphore;
 
-use crate::action::{Action, CmdKind, Effect, Hit, StoredResult, View};
-use crate::config::{DatabaseProfile, TerminalConfig};
+use crate::action::{Action, CmdKind, Effect, Hit, Pane, StoredResult, Tab, View};
+use crate::config::{DatabaseProfile, TerminalConfig, UiSettings};
 use crate::health::{self, HealthStatus};
+use crate::keymap::{self, KeyAction, KeyContext};
 use crate::model::{Context, IndexesReport, WhyReport};
+use crate::palette::{self, PaletteCmd, PaletteItem, PaletteState};
+use crate::parser::UserCommand;
 use crate::runner::{self, ConnSource, PgbotCommand, RunOutcome};
 use crate::sanitize::SafeError;
 
@@ -25,7 +28,17 @@ pub enum Focus {
     CommandBar,
     Popup,
     Help,
+    Palette,
 }
+
+/// A one-line notice about a database you are not looking at.
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub text: String,
+    pub until: Instant,
+}
+
+pub const TOAST_SECONDS: u64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PopupField {
@@ -68,8 +81,13 @@ pub struct DbState {
     pub health: HealthStatus,
     pub last_ok: Option<Instant>,
     pub last_checked: Option<Instant>,
+    pub tab: Tab,
     pub view: View,
     pub ctx: Option<Context>,
+    /// Non-suppressed finding ids from the latest check, sorted.
+    pub findings_now: Option<Vec<String>>,
+    /// The set that was on screen the last time the PgBot tab was viewed.
+    pub findings_seen: Option<Vec<String>>,
     pub indexes: Option<IndexesReport>,
     pub why: Option<WhyReport>,
     pub ask_output: Option<String>,
@@ -90,8 +108,11 @@ impl DbState {
             health: HealthStatus::Checking,
             last_ok: None,
             last_checked: None,
+            tab: Tab::Overview,
             view: View::Inspect,
             ctx: None,
+            findings_now: None,
+            findings_seen: None,
             indexes: None,
             why: None,
             ask_output: None,
@@ -122,6 +143,16 @@ impl DbState {
         }
     }
 
+    /// The PgBot tab is marked while the finding set differs from the one
+    /// last viewed there. Never marked before the tab has been viewed once.
+    pub fn pgbot_changed(&self) -> bool {
+        matches!((&self.findings_seen, &self.findings_now), (Some(seen), Some(now)) if seen != now)
+    }
+
+    pub fn mark_pgbot_seen(&mut self) {
+        self.findings_seen = self.findings_now.clone();
+    }
+
     pub fn checking(&self) -> bool {
         self.running.contains(&CmdKind::Monitor) || self.running.contains(&CmdKind::Inspect)
     }
@@ -150,6 +181,14 @@ pub struct App {
     pub dbs: Vec<DbState>,
     pub selected: usize,
     pub focus: Focus,
+    /// Which pane the keyboard drives while `Focus::Main`.
+    pub pane: Pane,
+    pub ui: UiSettings,
+    pub palette: Option<crate::palette::PaletteState>,
+    pub toast: Option<Toast>,
+    /// Set when a toast should also ring the terminal bell; the runtime
+    /// consumes it with `take_bell` after the draw.
+    pub bell_pending: bool,
     pub cmdline: String,
     pub cmd_error: Option<String>,
     pub popup: Option<AddPopup>,
@@ -179,6 +218,11 @@ impl App {
             dbs,
             selected,
             focus: Focus::Main,
+            pane: Pane::Main,
+            ui: cfg.ui.clone(),
+            palette: None,
+            toast: None,
+            bell_pending: false,
             cmdline: String::new(),
             cmd_error: None,
             popup: None,
@@ -199,6 +243,64 @@ impl App {
 
     pub fn selected_db(&self) -> Option<&DbState> {
         self.dbs.get(self.selected)
+    }
+
+    /// The toast, while it is still fresh enough to show.
+    pub fn active_toast(&self) -> Option<&Toast> {
+        self.toast.as_ref().filter(|t| Instant::now() < t.until)
+    }
+
+    /// Consumed once by the runtime, which rings the bell.
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.bell_pending)
+    }
+
+    fn notify(&mut self, text: String) {
+        self.toast = Some(Toast {
+            text,
+            until: Instant::now() + Duration::from_secs(TOAST_SECONDS),
+        });
+        if self.ui.bell {
+            self.bell_pending = true;
+        }
+    }
+
+    pub fn toggle_pane(&mut self) {
+        self.pane = match self.pane {
+            Pane::Sidebar => Pane::Main,
+            Pane::Main => Pane::Sidebar,
+        };
+    }
+
+    /// Switch the selected database's tab. Landing on PgBot counts as viewing
+    /// its findings, and fetches the current view's data if there is no cache.
+    pub fn set_tab(&mut self, tab: Tab) -> Vec<Effect> {
+        let selected = self.selected;
+        let Some(db) = self.dbs.get_mut(selected) else {
+            return Vec::new();
+        };
+        db.tab = tab;
+        if tab == Tab::PgBot {
+            db.mark_pgbot_seen();
+            let view = db.view;
+            return self.set_view(view);
+        }
+        Vec::new()
+    }
+
+    /// Which key contexts apply right now, most specific first.
+    fn key_contexts(&self) -> Vec<KeyContext> {
+        let mut v = Vec::with_capacity(2);
+        if self.pane == Pane::Sidebar {
+            v.push(KeyContext::Sidebar);
+        } else if let Some(db) = self.dbs.get(self.selected) {
+            v.push(match db.tab {
+                Tab::Overview => KeyContext::Overview,
+                Tab::PgBot => KeyContext::PgBot,
+            });
+        }
+        v.push(KeyContext::Main);
+        v
     }
 
     pub fn update(&mut self, action: Action) -> Vec<Effect> {
@@ -264,8 +366,24 @@ impl App {
         };
         state.running.remove(&kind);
         state.last_checked = Some(Instant::now());
+        // Collected inside the borrow, acted on after it: a toast mutates App.
+        let mut announce: Option<String> = None;
         match result {
             Ok(StoredResult::Ctx(ctx)) => {
+                let was = state.health;
+                let mut ids: Vec<String> = ctx
+                    .findings
+                    .iter()
+                    .filter(|f| !f.suppressed)
+                    .map(|f| f.id.clone())
+                    .collect();
+                ids.sort();
+                state.findings_now = Some(ids);
+                // The first result is the baseline, and a tab you are looking
+                // at is being viewed right now — neither counts as a change.
+                if state.findings_seen.is_none() || (db == selected && state.tab == Tab::PgBot) {
+                    state.mark_pgbot_seen();
+                }
                 state.health = health::overall(&ctx);
                 state.ctx = Some(*ctx);
                 state.last_ok = Some(Instant::now());
@@ -274,6 +392,12 @@ impl App {
                     && matches!(state.health, HealthStatus::Warning | HealthStatus::Critical)
                 {
                     state.attention = true;
+                }
+                if db != selected
+                    && state.health == HealthStatus::Critical
+                    && was != HealthStatus::Critical
+                {
+                    announce = Some(format!("{} is critical · [ to open", state.profile.name));
                 }
             }
             Ok(StoredResult::Indexes(r)) => {
@@ -292,13 +416,21 @@ impl App {
                 // Only a failed health/inspect run makes the DATABASE
                 // unavailable; a failed view fetch is that view's problem.
                 if matches!(kind, CmdKind::Monitor | CmdKind::Inspect) {
+                    let was = state.health;
                     state.health = HealthStatus::Unavailable;
                     if db != selected {
                         state.attention = true;
+                        if was != HealthStatus::Unavailable {
+                            announce =
+                                Some(format!("{} is unavailable · [ to open", state.profile.name));
+                        }
                     }
                 }
                 state.error = Some(e);
             }
+        }
+        if let Some(text) = announce {
+            self.notify(text);
         }
     }
 
@@ -428,57 +560,85 @@ impl App {
             }
             Focus::CommandBar => self.handle_command_bar_key(key),
             Focus::Popup => self.handle_popup_key(key),
+            Focus::Palette => self.handle_palette_key(key),
             Focus::Main => self.handle_main_key(key),
         }
     }
 
     fn handle_main_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        match key.code {
-            KeyCode::Char('q') => {
+        let contexts = self.key_contexts();
+        let Some(action) = keymap::lookup(&contexts, &key) else {
+            return Vec::new();
+        };
+        match action {
+            KeyAction::Quit => {
                 self.should_quit = true;
                 Vec::new()
             }
-            KeyCode::Tab => {
-                self.select_db(self.next_db(1));
+            KeyAction::Help => {
+                self.focus = Focus::Help;
                 Vec::new()
             }
-            KeyCode::BackTab => {
+            KeyAction::TogglePane => {
+                self.toggle_pane();
+                Vec::new()
+            }
+            KeyAction::PrevDb => {
                 self.select_db(self.next_db(-1));
                 Vec::new()
             }
-            KeyCode::Char('/') => {
+            KeyAction::NextDb => {
+                self.select_db(self.next_db(1));
+                Vec::new()
+            }
+            KeyAction::Palette => self.open_palette(),
+            KeyAction::CommandBar => {
                 self.focus = Focus::CommandBar;
                 self.cmd_error = None;
                 Vec::new()
             }
-            KeyCode::Char('a') => {
+            KeyAction::AddDb => {
                 self.popup = Some(AddPopup::default());
                 self.focus = Focus::Popup;
                 Vec::new()
             }
-            KeyCode::Char('?') => {
-                self.focus = Focus::Help;
-                Vec::new()
-            }
-            KeyCode::Char('r') => self.refresh_selected(),
-            KeyCode::Left => self.cycle_view(-1),
-            KeyCode::Right => self.cycle_view(1),
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.scroll_by(-1);
-                Vec::new()
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.scroll_by(1);
-                Vec::new()
-            }
-            KeyCode::Char(c) => {
-                if let Some((_, view, _)) = View::NUMBERED.iter().find(|(n, _, _)| *n == c) {
-                    self.set_view(*view)
+            KeyAction::Refresh => self.refresh_selected(),
+            KeyAction::SetTab(tab) => self.set_tab(tab),
+            KeyAction::PrevView => self.cycle_view(-1),
+            KeyAction::NextView => self.cycle_view(1),
+            KeyAction::Up => {
+                if self.pane == Pane::Sidebar {
+                    if self.selected > 0 {
+                        self.select_db(self.selected - 1);
+                    }
                 } else {
+                    self.scroll_by(-1);
+                }
+                Vec::new()
+            }
+            KeyAction::Down => {
+                if self.pane == Pane::Sidebar {
+                    if self.selected + 1 < self.dbs.len() {
+                        self.select_db(self.selected + 1);
+                    }
+                } else {
+                    self.scroll_by(1);
+                }
+                Vec::new()
+            }
+            KeyAction::Enter => {
+                if self.pane == Pane::Sidebar {
+                    // The sidebar picked a database; hand the keys to the body.
+                    self.pane = Pane::Main;
                     Vec::new()
+                } else {
+                    // Overview: open the findings behind the summary.
+                    if let Some(db) = self.dbs.get_mut(self.selected) {
+                        db.view = View::Inspect;
+                    }
+                    self.set_tab(Tab::PgBot)
                 }
             }
-            _ => Vec::new(),
         }
     }
 
@@ -505,8 +665,7 @@ impl App {
     /// Enter in the command bar: parse against the closed verb set. A parse
     /// error keeps the input and focus so the user can fix it in place.
     fn submit_command(&mut self) -> Vec<Effect> {
-        use crate::parser::{parse, UserCommand};
-        match parse(&self.cmdline) {
+        match crate::parser::parse(&self.cmdline) {
             Err(msg) => {
                 self.cmd_error = Some(msg);
                 Vec::new()
@@ -515,16 +674,35 @@ impl App {
                 self.cmdline.clear();
                 self.cmd_error = None;
                 self.focus = Focus::Main;
-                match cmd {
-                    UserCommand::Inspect => self.set_view(View::Inspect),
-                    UserCommand::Queries => self.set_view(View::Queries),
-                    UserCommand::Indexes => self.set_view(View::Indexes),
-                    UserCommand::Tables => self.set_view(View::Tables),
-                    UserCommand::Why => self.set_view(View::Why),
-                    UserCommand::Refresh => self.refresh_selected(),
-                    UserCommand::Ask(q) => self.spawn_ask(q),
-                }
+                self.run_user_command(cmd)
             }
+        }
+    }
+
+    /// Run one parsed verb. Shared by the command bar and the palette, so the
+    /// two surfaces can never drift apart. A pgbot view implies the PgBot tab.
+    pub fn run_user_command(&mut self, cmd: UserCommand) -> Vec<Effect> {
+        let view = match cmd {
+            UserCommand::Inspect => Some(View::Inspect),
+            UserCommand::Queries => Some(View::Queries),
+            UserCommand::Indexes => Some(View::Indexes),
+            UserCommand::Tables => Some(View::Tables),
+            UserCommand::Why => Some(View::Why),
+            _ => None,
+        };
+        if let Some(view) = view {
+            if let Some(db) = self.dbs.get_mut(self.selected) {
+                db.tab = Tab::PgBot;
+                db.mark_pgbot_seen();
+            }
+            return self.set_view(view);
+        }
+        match cmd {
+            UserCommand::Overview => self.set_tab(Tab::Overview),
+            UserCommand::Pgbot => self.set_tab(Tab::PgBot),
+            UserCommand::Refresh => self.refresh_selected(),
+            UserCommand::Ask(q) => self.spawn_ask(q),
+            _ => unreachable!("view verbs handled above"),
         }
     }
 
@@ -535,6 +713,7 @@ impl App {
         let Some(db) = self.dbs.get_mut(selected) else {
             return Vec::new();
         };
+        db.tab = Tab::PgBot;
         db.view = View::Ask;
         if db.running.contains(&CmdKind::Ask) {
             return Vec::new();
@@ -546,6 +725,111 @@ impl App {
             cmd: PgbotCommand::Ask(question),
             kind: CmdKind::Ask,
         }]
+    }
+
+    fn open_palette(&mut self) -> Vec<Effect> {
+        self.palette = Some(PaletteState::default());
+        self.cmd_error = None;
+        self.focus = Focus::Palette;
+        Vec::new()
+    }
+
+    pub fn palette_items(&self) -> Vec<PaletteItem> {
+        let names: Vec<&str> = self.dbs.iter().map(|d| d.profile.name.as_str()).collect();
+        palette::items(&names)
+    }
+
+    fn handle_palette_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(state) = self.palette.as_mut() else {
+            self.focus = Focus::Main;
+            return Vec::new();
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.palette = None;
+                self.cmd_error = None;
+                self.focus = Focus::Main;
+                Vec::new()
+            }
+            KeyCode::Backspace => {
+                state.input.pop();
+                state.cursor = 0;
+                Vec::new()
+            }
+            KeyCode::Up => {
+                state.cursor = state.cursor.saturating_sub(1);
+                Vec::new()
+            }
+            KeyCode::Down => {
+                state.cursor += 1;
+                Vec::new()
+            }
+            KeyCode::Enter => self.palette_submit(),
+            KeyCode::Char(c) => {
+                state.input.push(c);
+                state.cursor = 0;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Enter in the palette. A highlighted item wins; otherwise the typed text
+    /// goes to the command bar's parser, so `ask …` works here too. Unknown
+    /// input keeps the palette open with the parser's message.
+    fn palette_submit(&mut self) -> Vec<Effect> {
+        let Some(state) = self.palette.clone() else {
+            return Vec::new();
+        };
+        let input = state.input.trim().to_string();
+        let items = self.palette_items();
+        let hits = palette::filter(&items, &state.input);
+        // Free text that parses as a verb (`ask …`, `refresh`) is run as typed
+        // rather than as whatever item happened to fuzzy-match it.
+        let typed = crate::parser::parse(&input).ok().map(PaletteCmd::Verb);
+        let chosen = match (
+            input.is_empty(),
+            hits.get(state.cursor.min(hits.len().saturating_sub(1))),
+        ) {
+            (_, Some(&i)) if typed.is_none() || state.cursor > 0 => Some(items[i].cmd.clone()),
+            _ => typed.or_else(|| hits.first().map(|&i| items[i].cmd.clone())),
+        };
+        let Some(cmd) = chosen else {
+            self.cmd_error = Some(
+                crate::parser::parse(&input)
+                    .err()
+                    .unwrap_or_else(|| "no match".to_string()),
+            );
+            return Vec::new();
+        };
+        self.palette = None;
+        self.cmd_error = None;
+        self.focus = Focus::Main;
+        self.run_palette_cmd(cmd)
+    }
+
+    fn run_palette_cmd(&mut self, cmd: PaletteCmd) -> Vec<Effect> {
+        match cmd {
+            PaletteCmd::Verb(v) => self.run_user_command(v),
+            PaletteCmd::Tab(t) => self.set_tab(t),
+            PaletteCmd::SwitchDb(i) => {
+                self.select_db(i);
+                Vec::new()
+            }
+            PaletteCmd::AddDb => {
+                self.popup = Some(AddPopup::default());
+                self.focus = Focus::Popup;
+                Vec::new()
+            }
+            PaletteCmd::Help => {
+                self.focus = Focus::Help;
+                Vec::new()
+            }
+            PaletteCmd::Quit => {
+                self.should_quit = true;
+                Vec::new()
+            }
+        }
     }
 
     fn handle_popup_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -701,6 +985,14 @@ impl App {
                 Vec::new()
             }
             Some(Hit::SetView(v)) if self.focus == Focus::Main => self.set_view(v),
+            Some(Hit::SetTab(t)) if self.focus == Focus::Main => self.set_tab(t),
+            Some(Hit::OpenPalette) if self.focus == Focus::Main => self.open_palette(),
+            Some(Hit::PaletteItem(i)) if self.focus == Focus::Palette => {
+                if let Some(p) = self.palette.as_mut() {
+                    p.cursor = i;
+                }
+                self.palette_submit()
+            }
             Some(Hit::PopupTest) => self.popup_submit(false),
             Some(Hit::PopupAdd) => self.popup_submit(true),
             Some(Hit::PopupCancel) => {
@@ -898,6 +1190,7 @@ mod tests {
 
     const WARN: &str = include_str!("../tests/fixtures/context_warn.json");
     const HEALTHY: &str = include_str!("../tests/fixtures/context_healthy.json");
+    const CRITICAL: &str = include_str!("../tests/fixtures/context_critical.json");
 
     fn key(code: KeyCode) -> Action {
         Action::Key(KeyEvent::new(code, KeyModifiers::NONE))
@@ -908,6 +1201,18 @@ mod tests {
         for i in 0..n {
             cfg.add(&format!("db{i}"), &format!("APP_TEST_URL_{i}"))
                 .unwrap();
+        }
+        App::new(&cfg, None, false, None)
+    }
+
+    fn ctrl(c: char) -> Action {
+        Action::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    fn named_app(names: &[&str]) -> App {
+        let mut cfg = TerminalConfig::default();
+        for n in names {
+            cfg.add(n, &format!("{}_URL", n.to_uppercase())).unwrap();
         }
         App::new(&cfg, None, false, None)
     }
@@ -973,8 +1278,8 @@ mod tests {
         assert_eq!(a.dbs[0].health, HealthStatus::Healthy);
         assert!(!a.dbs[0].attention, "the selected tab is being watched");
 
-        // Selecting the flagged tab clears the flag.
-        a.update(key(KeyCode::Tab));
+        // Selecting the flagged database clears the flag.
+        a.update(key(KeyCode::Char(']')));
         assert_eq!(a.selected, 1);
         assert!(!a.dbs[1].attention);
     }
@@ -1011,7 +1316,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_cycles_and_wraps_and_state_survives() {
+    fn brackets_cycle_databases_and_state_survives() {
         let mut a = app(3);
         a.update(Action::CheckFinished {
             db: 0,
@@ -1019,21 +1324,21 @@ mod tests {
             result: ok_ctx(HEALTHY),
         });
         a.dbs[0].view = View::Indexes;
-        a.update(key(KeyCode::Tab));
-        a.update(key(KeyCode::Tab));
+        a.update(key(KeyCode::Char(']')));
+        a.update(key(KeyCode::Char(']')));
         assert_eq!(a.selected, 2);
-        a.update(key(KeyCode::Tab));
-        assert_eq!(a.selected, 0, "Tab wraps");
-        assert_eq!(a.dbs[0].view, View::Indexes, "view survives tab switches");
-        assert!(a.dbs[0].ctx.is_some(), "cache survives tab switches");
-        a.update(key(KeyCode::BackTab));
-        assert_eq!(a.selected, 2, "Shift+Tab wraps backwards");
+        a.update(key(KeyCode::Char(']')));
+        assert_eq!(a.selected, 0, "] wraps");
+        assert_eq!(a.dbs[0].view, View::Indexes, "view survives db switches");
+        assert!(a.dbs[0].ctx.is_some(), "cache survives db switches");
+        a.update(key(KeyCode::Char('[')));
+        assert_eq!(a.selected, 2, "[ wraps backwards");
     }
 
     #[test]
-    fn number_keys_map_to_views_and_fetch_only_when_empty() {
+    fn view_switches_fetch_only_when_the_cache_is_empty() {
         let mut a = app(1);
-        let effects = a.update(key(KeyCode::Char('2')));
+        let effects = a.set_view(View::Queries);
         assert_eq!(a.dbs[0].view, View::Queries);
         assert!(matches!(
             effects.as_slice(),
@@ -1043,8 +1348,8 @@ mod tests {
                 ..
             }]
         ));
-        // Same-kind job in flight → pressing 4 (also Context-backed) spawns nothing.
-        let effects = a.update(key(KeyCode::Char('4')));
+        // Same-kind job in flight → Tables (also Context-backed) spawns nothing.
+        let effects = a.set_view(View::Tables);
         assert_eq!(a.dbs[0].view, View::Tables);
         assert!(effects.is_empty(), "no duplicate identical jobs");
 
@@ -1053,10 +1358,10 @@ mod tests {
             kind: CmdKind::Inspect,
             result: ok_ctx(HEALTHY),
         });
-        let effects = a.update(key(KeyCode::Char('1')));
+        let effects = a.set_view(View::Inspect);
         assert!(effects.is_empty(), "cached Context serves Inspect too");
 
-        let effects = a.update(key(KeyCode::Char('3')));
+        let effects = a.set_view(View::Indexes);
         assert!(matches!(
             effects.as_slice(),
             [Effect::Spawn {
@@ -1358,6 +1663,8 @@ mod tests {
     #[test]
     fn arrow_keys_cycle_the_numbered_views_and_wrap() {
         let mut a = app(1);
+        // Arrows only step through views on the PgBot tab.
+        a.update(key(KeyCode::Char('2')));
         a.update(Action::CheckFinished {
             db: 0,
             kind: CmdKind::Monitor,
@@ -1572,5 +1879,184 @@ mod tests {
 
         std::env::remove_var("PGTERM_CONFIG");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tab_toggles_pane_and_brackets_switch_databases() {
+        let mut a = app(3);
+        assert_eq!(a.pane, Pane::Main);
+        a.update(key(KeyCode::Tab));
+        assert_eq!(a.pane, Pane::Sidebar);
+        a.update(key(KeyCode::BackTab));
+        assert_eq!(a.pane, Pane::Main);
+        a.update(key(KeyCode::Char(']')));
+        assert_eq!(a.selected, 1);
+        a.update(key(KeyCode::Char('[')));
+        a.update(key(KeyCode::Char('[')));
+        assert_eq!(a.selected, 2, "wraps");
+    }
+
+    #[test]
+    fn sidebar_jk_select_and_enter_returns_to_main() {
+        let mut a = app(3);
+        a.update(key(KeyCode::Tab));
+        a.update(key(KeyCode::Char('j')));
+        assert_eq!(a.selected, 1);
+        a.update(key(KeyCode::Down));
+        assert_eq!(a.selected, 2);
+        a.update(key(KeyCode::Char('j')));
+        assert_eq!(a.selected, 2, "no wrap in the sidebar list");
+        a.update(key(KeyCode::Char('k')));
+        assert_eq!(a.selected, 1);
+        a.update(key(KeyCode::Enter));
+        assert_eq!(a.pane, Pane::Main);
+    }
+
+    #[test]
+    fn digits_switch_tabs_per_database_and_are_inert_in_inputs() {
+        let mut a = app(2);
+        assert_eq!(a.dbs[0].tab, Tab::Overview);
+        a.update(key(KeyCode::Char('2')));
+        assert_eq!(a.dbs[0].tab, Tab::PgBot);
+        a.update(key(KeyCode::Char(']')));
+        assert_eq!(a.dbs[1].tab, Tab::Overview, "tabs are per database");
+        a.update(key(KeyCode::Char('[')));
+        assert_eq!(a.dbs[0].tab, Tab::PgBot, "and survive switching");
+        a.update(key(KeyCode::Char('/')));
+        a.update(key(KeyCode::Char('1')));
+        assert_eq!(a.cmdline, "1");
+        assert_eq!(a.dbs[0].tab, Tab::PgBot);
+    }
+
+    #[test]
+    fn arrows_cycle_pgbot_views_only_on_the_pgbot_tab() {
+        let mut a = app(1);
+        a.update(key(KeyCode::Right));
+        assert_eq!(a.dbs[0].view, View::Inspect, "overview ignores arrows");
+        a.update(key(KeyCode::Char('2')));
+        a.update(key(KeyCode::Right));
+        assert_eq!(a.dbs[0].view, View::Queries);
+        a.update(key(KeyCode::Char('h')));
+        assert_eq!(a.dbs[0].view, View::Inspect);
+    }
+
+    #[test]
+    fn enter_on_overview_opens_pgbot_inspect() {
+        let mut a = app(1);
+        let effects = a.update(key(KeyCode::Enter));
+        assert_eq!(a.dbs[0].tab, Tab::PgBot);
+        assert_eq!(a.dbs[0].view, View::Inspect);
+        assert_eq!(effects.len(), 1, "no cache yet → one inspect spawn");
+    }
+
+    #[test]
+    fn pgbot_tab_is_marked_until_viewed_when_findings_change() {
+        let mut a = app(2);
+        a.update(Action::CheckFinished {
+            db: 1,
+            kind: CmdKind::Monitor,
+            result: ok_ctx(HEALTHY),
+        });
+        assert!(!a.dbs[1].pgbot_changed(), "first result is not 'changed'");
+        a.update(key(KeyCode::Char(']')));
+        a.update(key(KeyCode::Char('2')));
+        assert!(!a.dbs[1].pgbot_changed());
+        a.update(key(KeyCode::Char('[')));
+        a.update(Action::CheckFinished {
+            db: 1,
+            kind: CmdKind::Monitor,
+            result: ok_ctx(WARN),
+        });
+        assert!(a.dbs[1].pgbot_changed(), "new findings while not viewing");
+        a.update(key(KeyCode::Char(']')));
+        assert!(
+            a.dbs[1].pgbot_changed(),
+            "selecting the database is not viewing the tab"
+        );
+        a.update(key(KeyCode::Char('2')));
+        assert!(!a.dbs[1].pgbot_changed());
+    }
+
+    #[test]
+    fn toast_fires_for_an_unselected_database_turning_critical_not_for_recovery_or_self() {
+        let mut a = app(2);
+        a.ui.bell = true;
+        a.update(Action::CheckFinished {
+            db: 1,
+            kind: CmdKind::Monitor,
+            result: ok_ctx(HEALTHY),
+        });
+        assert!(a.active_toast().is_none());
+        a.update(Action::CheckFinished {
+            db: 1,
+            kind: CmdKind::Monitor,
+            result: ok_ctx(CRITICAL),
+        });
+        let t = a.active_toast().expect("toast");
+        assert!(
+            t.text.contains("critical") && t.text.contains("[ to open"),
+            "{}",
+            t.text
+        );
+        assert!(a.take_bell());
+        assert!(!a.take_bell(), "bell is consumed");
+        a.update(Action::CheckFinished {
+            db: 1,
+            kind: CmdKind::Monitor,
+            result: ok_ctx(HEALTHY),
+        });
+        a.toast = None;
+        a.update(Action::CheckFinished {
+            db: 0,
+            kind: CmdKind::Monitor,
+            result: ok_ctx(CRITICAL),
+        });
+        assert!(
+            a.active_toast().is_none(),
+            "the selected database never toasts"
+        );
+        a.update(Action::CheckFinished {
+            db: 1,
+            kind: CmdKind::Monitor,
+            result: err(),
+        });
+        assert!(a.active_toast().unwrap().text.contains("unavailable"));
+        a.toast.as_mut().unwrap().until = Instant::now() - Duration::from_secs(1);
+        assert!(a.active_toast().is_none(), "expired");
+    }
+
+    #[test]
+    fn palette_opens_filters_runs_and_closes() {
+        let mut a = named_app(&["production", "staging"]);
+        a.update(ctrl('k'));
+        assert_eq!(a.focus, Focus::Palette);
+        for c in "sw st".chars() {
+            a.update(key(KeyCode::Char(c)));
+        }
+        a.update(key(KeyCode::Enter));
+        assert_eq!(a.focus, Focus::Main);
+        assert_eq!(a.selected, 1, "switch to staging ran");
+        a.update(key(KeyCode::Char(':')));
+        a.update(key(KeyCode::Esc));
+        assert_eq!(a.focus, Focus::Main);
+        // Free text that parses as a verb runs as typed.
+        a.update(key(KeyCode::Char(':')));
+        for c in "ask why is it slow".chars() {
+            a.update(key(KeyCode::Char(c)));
+        }
+        let effects = a.update(key(KeyCode::Enter));
+        assert_eq!(effects.len(), 1);
+        assert_eq!(a.dbs[1].view, View::Ask);
+        a.update(key(KeyCode::Char(':')));
+        for c in "zzzz".chars() {
+            a.update(key(KeyCode::Char(c)));
+        }
+        a.update(key(KeyCode::Enter));
+        assert_eq!(
+            a.focus,
+            Focus::Palette,
+            "unknown input stays open with an error"
+        );
+        assert!(a.cmd_error.is_some());
     }
 }
