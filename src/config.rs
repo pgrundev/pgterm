@@ -89,6 +89,9 @@ pub struct UiSettings {
     /// Ring the terminal bell with a toast when an unselected database turns
     /// critical or unavailable.
     pub bell: bool,
+    /// Ask the terminal for a hand pointer over clickable things (OSC 22).
+    /// Terminals that do not implement it ignore the sequence.
+    pub pointer: bool,
 }
 
 impl Default for UiSettings {
@@ -96,6 +99,7 @@ impl Default for UiSettings {
         UiSettings {
             sidebar_detail: true,
             bell: false,
+            pointer: true,
         }
     }
 }
@@ -117,6 +121,9 @@ max_concurrent_checks = 3
 sidebar_detail = true
 # Terminal bell when a database you are not looking at turns critical.
 bell = false
+# Ask the terminal for a hand pointer over clickable things (OSC 22).
+# Works in Ghostty, kitty, WezTerm, foot and xterm; others ignore it.
+pointer = true
 
 # One block per database:
 # [[databases]]

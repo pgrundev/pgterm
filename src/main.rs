@@ -48,6 +48,15 @@ fn main() {
     std::process::exit(code);
 }
 
+/// Hand the pointer back to the terminal. Sent unconditionally on the way out:
+/// leaving a hand cursor behind in the user's shell would be our bug.
+fn restore_pointer() {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    let _ = out.write_all(pgterm::pointer::Shape::Default.escape().as_bytes());
+    let _ = out.flush();
+}
+
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().expect("tokio runtime")
 }
@@ -72,6 +81,7 @@ fn run_tui(interval: Option<u64>, no_monitor: bool, select: Option<String>) -> i
             DisableMouseCapture,
             DisableBracketedPaste
         );
+        restore_pointer();
         prev(info);
     }));
     let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste);
@@ -83,6 +93,7 @@ fn run_tui(interval: Option<u64>, no_monitor: bool, select: Option<String>) -> i
         DisableMouseCapture,
         DisableBracketedPaste
     );
+    restore_pointer();
     ratatui::restore();
     match result {
         Ok(()) => 0,
@@ -133,6 +144,14 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, mut app: App) -> an
             use std::io::Write;
             let mut out = std::io::stdout();
             let _ = out.write_all(b"\x07");
+            let _ = out.flush();
+        }
+        // Ask the terminal for a hand over clickable things. Terminals without
+        // OSC 22 discard it.
+        if let Some(shape) = app.take_pointer() {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(shape.escape().as_bytes());
             let _ = out.flush();
         }
         if app.should_quit {
