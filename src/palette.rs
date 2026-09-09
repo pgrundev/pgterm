@@ -94,7 +94,9 @@ pub fn filter(items: &[PaletteItem], query: &str) -> Vec<usize> {
         .enumerate()
         .filter_map(|(i, it)| score(query, &it.label).map(|s| (i, s)))
         .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    // Reverse for best-first; sort_by_key is stable, so equal scores keep
+    // declaration order (which is what puts the databases at the top).
+    scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
     scored.into_iter().map(|(i, _)| i).collect()
 }
 
