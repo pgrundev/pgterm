@@ -31,6 +31,27 @@ impl View {
     ];
 }
 
+/// Top-level tabs of the main pane. One current tab per database, so
+/// switching databases returns you where you were.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Tab {
+    Overview,
+    PgBot,
+}
+
+impl Tab {
+    /// The tab row: number key ↔ tab.
+    pub const NUMBERED: [(char, Tab, &'static str); 2] =
+        [('1', Tab::Overview, "Overview"), ('2', Tab::PgBot, "PgBot")];
+}
+
+/// Which pane holds keyboard focus while `Focus::Main`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Sidebar,
+    Main,
+}
+
 /// What kind of background job is (or was) running for a database — the
 /// dedupe key: one job of a kind per database at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -67,6 +88,8 @@ pub enum Action {
         name: String,
         source: ConnSource,
         save: bool,
+        /// The environment badge chosen in the popup; None = infer it.
+        stage: Option<crate::config::Stage>,
         /// For a pasted NAME='URL' assignment: the variable NAME to persist
         /// in config while the URL itself stays session-only in memory.
         persist_env: Option<String>,
@@ -89,6 +112,7 @@ pub enum Effect {
         name: String,
         source: ConnSource,
         save: bool,
+        stage: Option<crate::config::Stage>,
         persist_env: Option<String>,
     },
 }
@@ -99,6 +123,10 @@ pub enum Hit {
     SelectDb(usize),
     OpenAdd,
     SetView(View),
+    SetTab(Tab),
+    OpenPalette,
+    /// Row index within the palette's currently filtered list.
+    PaletteItem(usize),
     PopupTest,
     PopupAdd,
     PopupCancel,

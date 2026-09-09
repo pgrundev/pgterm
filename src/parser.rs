@@ -5,6 +5,8 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserCommand {
+    Overview,
+    Pgbot,
     Inspect,
     Queries,
     Indexes,
@@ -14,7 +16,8 @@ pub enum UserCommand {
     Ask(String),
 }
 
-const KNOWN: &str = "inspect, queries, indexes, tables, why, refresh, ask <question>";
+const KNOWN: &str =
+    "overview, pgbot, inspect, queries, indexes, tables, why, refresh, ask <question>";
 
 pub fn parse(input: &str) -> Result<UserCommand, String> {
     let trimmed = input.trim();
@@ -34,6 +37,8 @@ pub fn parse(input: &str) -> Result<UserCommand, String> {
     };
 
     match verb.as_str() {
+        "overview" => bare(UserCommand::Overview),
+        "pgbot" => bare(UserCommand::Pgbot),
         "inspect" => bare(UserCommand::Inspect),
         "queries" => bare(UserCommand::Queries),
         "indexes" => bare(UserCommand::Indexes),
@@ -57,6 +62,8 @@ mod tests {
 
     #[test]
     fn the_whitelist_parses() {
+        assert_eq!(parse("overview"), Ok(UserCommand::Overview));
+        assert_eq!(parse("PGBOT"), Ok(UserCommand::Pgbot));
         assert_eq!(parse("inspect"), Ok(UserCommand::Inspect));
         assert_eq!(parse("QUERIES"), Ok(UserCommand::Queries));
         assert_eq!(parse("  indexes  "), Ok(UserCommand::Indexes));

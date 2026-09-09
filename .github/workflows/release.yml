@@ -31,6 +31,12 @@ jobs:
             target: x86_64-apple-darwin
             os: darwin
             arch: amd64
+          # The test suite already runs on Windows in CI (tests/bin/fake_pgbot.rs),
+          # so shipping a binary is one matrix entry.
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            os: windows
+            arch: amd64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
@@ -48,17 +54,25 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: package
+        shell: bash
         run: |
           set -eu
           VERSION="${GITHUB_REF_NAME#v}"
           staging="pgterm_${VERSION}_${{ matrix.os }}_${{ matrix.arch }}"
           mkdir "$staging"
-          cp "target/${{ matrix.target }}/release/pgterm" README.md LICENSE "$staging/"
-          tar -czf "$staging.tar.gz" "$staging"
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            cp "target/${{ matrix.target }}/release/pgterm.exe" README.md LICENSE "$staging/"
+            7z a -tzip "$staging.zip" "$staging" > /dev/null
+          else
+            cp "target/${{ matrix.target }}/release/pgterm" README.md LICENSE "$staging/"
+            tar -czf "$staging.tar.gz" "$staging"
+          fi
       - uses: actions/upload-artifact@v4
         with:
-          name: tarball-${{ matrix.os }}-${{ matrix.arch }}
-          path: pgterm_*.tar.gz
+          name: archive-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            pgterm_*.tar.gz
+            pgterm_*.zip
           if-no-files-found: error
 
   publish:
@@ -73,7 +87,7 @@ jobs:
         run: |
           set -eu
           cd dist
-          sha256sum pgterm_*.tar.gz > checksums.txt
+          sha256sum pgterm_*.tar.gz pgterm_*.zip > checksums.txt
           cat checksums.txt
       - name: create release
         env:
@@ -83,7 +97,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "pgterm $GITHUB_REF_NAME" \
             --generate-notes \
-            dist/pgterm_*.tar.gz dist/checksums.txt
+            dist/pgterm_*.tar.gz dist/pgterm_*.zip dist/checksums.txt
 
   smoke:
     needs: publish
@@ -112,6 +126,29 @@ jobs:
           out="$("pgterm_${VERSION}_${os}_${arch}/pgterm" --version)"
           echo "$out"
           [ "$out" = "pgterm ${VERSION}" ] || { echo "version mismatch"; exit 1; }
+
+  # The Windows artifact gets the same download-verify-run treatment as the
+  # Unix ones: a packaging break is invisible to the test suite.
+  smoke-windows:
+    needs: publish
+    runs-on: windows-latest
+    steps:
+      - name: download, verify, run --version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $zip = "pgterm_${version}_windows_amd64.zip"
+          gh release download $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --pattern $zip --pattern checksums.txt
+          $want = (Select-String -Path checksums.txt -Pattern ([regex]::Escape($zip))).Line.Split(" ")[0]
+          $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($want -ne $got) { throw "checksum mismatch: published $want, downloaded $got" }
+          Expand-Archive $zip -DestinationPath .
+          $out = & ".\pgterm_${version}_windows_amd64\pgterm.exe" --version
+          Write-Host $out
+          if ($out -ne "pgterm $version") { throw "version mismatch: $out" }
 
   # Homebrew: render Formula/pgterm.rb from the checksums just published and
   # push it to pgrundev/homebrew-tap. GITHUB_TOKEN cannot write to another

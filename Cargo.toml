@@ -1,6 +1,6 @@
 [package]
 name = "pgterm"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 description = "htop for all your Postgres databases — a multi-database terminal UI powered by pgbot"
 license = "Apache-2.0"

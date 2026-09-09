@@ -5,32 +5,39 @@ monitors every database you care about in one place, powered by
 [pgbot](https://pgbot.dev)'s read-only diagnostics.
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│ [ production ● ] [ staging ● ] [ analytics ! ] [ + Add DB ]          │
-├──────────────────────────────────────────────────────────────────────┤
-│ production                                       last check: 12s ago │
-│                                                                      │
-│ DATABASE HEALTH                                       94 / 100       │
-│                                                                      │
-│ Connections        OK          84 / 300                              │
-│ Cache              OK          99.2%                                 │
-│ Locks              FAIL        3 blocked                             │
-│ Queries            WARN        2 regressions                         │
-│ Indexes            WARN        27 unused · 43 GiB                    │
-│ Vacuum             OK          3m ago                                │
-│ Replication        OK          210 ms                                │
-│                                                                      │
-│ 1 failing · 2 warnings · 4 healthy                                   │
-├──────────────────────────────────────────────────────────────────────┤
-│ 1 Inspect   2 Queries   3 Indexes   4 Tables   5 Why                 │
-├──────────────────────────────────────────────────────────────────────┤
-│ production > _                                                       │
-└──────────────────────────────────────────────────────────────────────┘
+ pgterm   ▸ production  PROD                                                                        ^K commands  ? help
+ DATABASES               │  1 Overview   2 PgBot                                               ! PostgreSQL 17 · 0s ago
+                         │──────────────────────────────────────────────────────────────────────────────────────────────
+  ! production      PROD │ production  PROD                                                        r refresh   2 pgbot
+    2 indexes with zero  │ ● Connected · PostgreSQL 17.4 · RDS · up 10d · checked 0s ago
+  ● staging      STAGING │
+    checked 0s ago       │ ┌ PostgreSQL ─┐ ┌ Connections ┐ ┌ Active ─────┐ ┌ Size ───────┐ ┌ Uptime ─────┐
+  ◌ analytics            │ │ 17.4        │ │ 84 / 300    │ │ 5           │ │ 140 GiB     │ │ 10d         │
+    checking…            │ └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘
+ + Add database          │
+                         │  cache hit  [████████████████████]  99.2%     ok
+                         │  lock wait  [░░░░░░░░░░░░░░░░░░░░]  —         ok
+                         │  rollbacks  [██░░░░░░░░░░░░░░░░░░]  12.0%     watch
+                         │  idle idx   [███░░░░░░░░░░░░░░░░░]  20 GiB    review
+                         │
+                         │ PGBOT   3 findings need attention
+                         │  ⚠ 2 indexes with zero scans in the observed window                        confidence MEDIUM
+                         │  ⚠ 2 queries regressed vs baseline                                           confidence HIGH
+                         │  ⚠ rollbacks 12% of transactions                                           confidence MEDIUM
+                         │  ✓ Connections   84 / 300
+                         │  ✓ Cache         99.2%
+                         │  ✓ Locks         0 blocked
+                         │  ✓ Vacuum        13d ago
+                         │  ✓ Replication   210 ms
 ```
 
-Each tab is one PostgreSQL database. pgterm checks them all in the
-background and flags the tab that needs attention — without stealing focus
-from the one you're looking at.
+One row per database in the sidebar, badged by environment. pgterm checks
+them all in the background and flags the one that needs attention without
+stealing focus from the one you're looking at. Overview answers "is this
+database healthy" at a glance; the PgBot tab has the full diagnostics.
+
+Below 100 columns the sidebar collapses to a tab strip and everything else
+stays put, so pgterm still works in a split pane.
 
 ## Try it in 10 seconds (no database needed)
 
@@ -64,6 +71,13 @@ pgterm and the pgbot it drives, so Homebrew trusts both from the tap:
 
 ```bash
 brew install pgrundev/tap/pgterm pgrundev/tap/pgbot
+```
+
+On Windows, in PowerShell (install pgbot separately from
+[pgbot.dev](https://pgbot.dev)):
+
+```powershell
+irm https://pgterm.dev/install.ps1 | iex
 ```
 
 Or build from source: `cargo build --release`.
@@ -112,7 +126,8 @@ echo "export STAGING_DATABASE_URL='postgresql://...'" >> ~/.zshrc
 
 ### Adding from inside the UI
 
-Press `a` (or click `+ Add DB`). The Connection field accepts any of:
+Press `a` (or click `+ Add database`). Name, then Stage (`←`/`→` cycles
+auto · prod · staging · dev · local), then Connection, which accepts any of:
 
 | You type or paste | What happens |
 |---|---|
@@ -148,24 +163,91 @@ Whatever you paste is masked on screen; connection strings never touch disk.
 | `pgterm` | Open the terminal UI |
 | `pgterm add <name>` | Add the database from `DATABASE_URL` (validates first) |
 | `pgterm add <name> --env <VAR>` | Add a database by env-var reference |
+| `pgterm add <name> --stage prod` | Add with an environment badge |
 | `pgterm add <name> --env <VAR> --open` | Add, then open the UI on it |
 | `pgterm list` | List configured databases (names only, never values) |
 | `pgterm remove <name>` | Remove the local profile (PostgreSQL untouched) |
 | `pgterm --interval 30s` | Background check cadence (default 60s) |
 | `pgterm --no-monitor` | Disable background checks |
+| `pgterm --default-config` | Print an annotated default config |
 
 ## Keys
 
 ```
-Tab / Shift+Tab    switch database          /    command bar
-1..5               inspect · queries ·      r    refresh
-  ← / →            indexes · tables · why   a    add database
-?                  help                     q    quit
+NAVIGATION
+Tab / S-Tab        focus sidebar / main pane
+[                  previous database
+]                  next database
+1                  overview tab
+2                  pgbot tab
+C-k / :            command palette
+/                  command bar (verbs, ask …)
+a                  add database
+r                  refresh
+j / Down           scroll down / move down
+k / Up             scroll up / move up
+
+SIDEBAR
+Enter              open the selected database
+
+OVERVIEW
+Enter              open pgbot findings
+
+PGBOT TAB
+Left / h           previous pgbot view
+Right / l          next pgbot view
+
+GENERAL
+q                  quit
+?                  help
 ```
+
+`?` shows this same list inside pgterm — it is generated from the keymap, so
+it can never describe a binding that does not exist. A test checks this table
+against it too.
+
+### What moved in 0.2
+
+- `Tab` / `Shift+Tab` now move between the sidebar and the main pane. `[` and
+  `]` switch databases.
+- Number keys pick tabs (`1` Overview, `2` PgBot). Inside PgBot, `←`/`→` or
+  `h`/`l` step through Inspect · Queries · Indexes · Tables · Why.
+- `Ctrl-K` (or `:`) opens the command palette. `/` is still the command bar.
+
+## The Overview tab
+
+Six tiles, then the same four gauges pgbot's own `inspect` shows, computed
+from the same JSON by the same rules so the two never disagree:
+
+| Gauge | What it measures | When it is not shown |
+|---|---|---|
+| cache hit | sampled cache-hit ratio; `low` when pgbot flags it | `thin sample` below 10,000 blocks |
+| lock wait | sessions blocked right now | `not measurable` without lock data |
+| rollbacks | rolled-back share of transactions; `watch` when flagged | `not measurable` without the counter |
+| idle idx | bytes in zero-scan indexes, as a share of the database | `window < 15m` in a cold stats window |
+
+Under them, the findings that need attention with pgbot's own confidence, then
+a `✓` line per subsystem that came back clean. Press `Enter` (or `2`) for the
+full report.
+
+## Stages and badges
+
+Each database carries an environment badge — `PROD`, `STAGING`, `DEV`,
+`LOCAL` — shown in the sidebar and the header. Set it explicitly, or let
+pgterm infer it from the name:
+
+```bash
+pgterm add production --env PROD_DATABASE_URL --stage prod
+```
+
+Without `--stage`, a name containing `prod`, `stag`, `local` or `dev` picks
+its own badge; anything else gets none. The badge is a word first, so it
+survives a monochrome terminal.
 
 ## Configuration
 
-`~/.config/pgterm/config.toml` (or `$XDG_CONFIG_HOME/pgterm/config.toml`):
+`~/.config/pgterm/config.toml` (or `$XDG_CONFIG_HOME/pgterm/config.toml`).
+`pgterm --default-config` prints an annotated copy of the defaults:
 
 ```toml
 version = 1
@@ -174,10 +256,20 @@ version = 1
 interval_seconds = 60
 max_concurrent_checks = 3
 
+[ui]
+sidebar_detail = true   # a second, dim line per database in the sidebar
+bell = false            # ring the terminal bell with a toast
+
 [[databases]]
 name = "production"
 env = "PROD_DATABASE_URL"
+stage = "prod"          # prod | staging | dev | local — inferred when absent
 ```
+
+When a database you are *not* looking at turns critical or unavailable, a
+one-line toast appears at the right of the command bar for five seconds
+(and rings the bell if you asked for one). Nothing interrupts the database
+you are actually reading.
 
 ## Building
 

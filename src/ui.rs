@@ -2,16 +2,16 @@
 //! mouse hitmap as it goes — the draw is the only authority on where things
 //! ended up on screen.
 
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::action::{Hit, View};
+use crate::action::{Hit, Tab};
 use crate::app::{App, DbState, Focus};
 use crate::health::HealthStatus;
-use crate::screens::{self, states};
+use crate::screens::{self, overview, sidebar, states, tabs};
 
 /// Status glyph + tone for a database tab. Shape differs by state, never
 /// color alone: ● healthy, ! warning/critical, ○ unavailable, ◌ checking.
@@ -28,6 +28,12 @@ pub fn tab_glyph(db: &DbState) -> (&'static str, Color) {
     }
 }
 
+/// Wide layouts get the database sidebar; narrow ones fall back to the
+/// original top strip, so pgterm still works in a split pane.
+pub fn is_wide(width: u16) -> bool {
+    width >= 100
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     app.hitmap.clear();
     let area = f.area();
@@ -40,28 +46,119 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    let [tabs_row, body, shortcut_row, cmd_row] = Layout::vertical([
+    let [top, body, cmd_row] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
-        Constraint::Length(1),
     ])
     .areas(area);
+    draw_top_bar(f, top, app);
 
-    draw_tabs(f, tabs_row, app);
+    let mut hits: Vec<(Rect, Hit)> = Vec::new();
+    let main = if is_wide(area.width) {
+        let [side, rule, main] = Layout::horizontal([
+            Constraint::Length(sidebar::WIDTH - 1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .areas(body);
+        hits.extend(sidebar::draw(f, side, app));
+        f.render_widget(
+            Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(Color::DarkGray)),
+            rule,
+        );
+        main
+    } else {
+        let [strip, main] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body);
+        draw_tabs(f, strip, app);
+        main
+    };
+
+    let [tab_row, rule, tab_body] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(main);
+    hits.extend(tabs::draw_tab_row(f, tab_row, app));
+    f.render_widget(
+        Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(Color::DarkGray)),
+        rule,
+    );
     if let Some(db) = app.dbs.get(app.selected) {
-        screens::draw_body(f, body, db);
+        match db.tab {
+            Tab::Overview => overview::draw(f, tab_body, db),
+            Tab::PgBot => {
+                let [sub, rest] =
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(tab_body);
+                hits.extend(tabs::draw_subtabs(f, sub, db));
+                screens::draw_body(f, rest, db);
+            }
+        }
     }
-    draw_shortcuts(f, shortcut_row, app);
+    app.hitmap.extend(hits);
+
     draw_command_bar(f, cmd_row, app);
+    draw_toast(f, cmd_row, app);
 
     if app.focus == Focus::Help {
         draw_help(f, area);
+    }
+    if app.focus == Focus::Palette {
+        let hits = draw_palette(f, area, app);
+        app.hitmap.extend(hits);
     }
     if let Some(popup) = app.popup.clone() {
         let hits = draw_popup(f, area, &popup, app.focus);
         app.hitmap.extend(hits);
     }
+}
+
+/// Product name, the database you are on, and where the two overlays live.
+fn draw_top_bar(f: &mut Frame, area: Rect, app: &mut App) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut spans = vec![Span::styled(
+        " pgterm ",
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    if let Some(db) = app.dbs.get(app.selected) {
+        spans.push(Span::raw(format!("  ▸ {}", db.profile.name)));
+        if let Some(stage) = db.profile.badge() {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(stage.label(), sidebar::badge_style(stage)));
+        }
+    }
+    let right = "^K commands  ? help ";
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let gap = (area.width as usize).saturating_sub(used + right.len());
+    spans.push(Span::raw(" ".repeat(gap)));
+    let x = area.x + (used + gap) as u16;
+    spans.push(Span::styled(right, dim));
+    app.hitmap
+        .push((Rect::new(x, area.y, 12, 1), Hit::OpenPalette));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// A database you are not looking at needed saying something.
+fn draw_toast(f: &mut Frame, area: Rect, app: &App) {
+    let Some(t) = app.active_toast() else {
+        return;
+    };
+    let w = (t.text.chars().count() as u16 + 2).min(area.width);
+    let rect = Rect::new(area.right().saturating_sub(w), area.y, w, 1);
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            format!(" {} ", t.text),
+            Style::default().fg(Color::Black).bg(Color::Yellow),
+        )),
+        rect,
+    );
 }
 
 fn draw_tabs(f: &mut Frame, area: Rect, app: &mut App) {
@@ -100,28 +197,6 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &mut App) {
     app.hitmap.extend(hits);
 }
 
-fn draw_shortcuts(f: &mut Frame, area: Rect, app: &mut App) {
-    let current = app.dbs.get(app.selected).map(|d| d.view);
-    let mut spans: Vec<Span> = Vec::new();
-    let mut x = area.x;
-    let mut hits: Vec<(Rect, Hit)> = Vec::new();
-    for (key, view, name) in View::NUMBERED {
-        let label = format!(" {key} {name} ");
-        let width = label.chars().count() as u16;
-        let style = if current == Some(view) {
-            Style::default().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::default()
-        };
-        spans.push(Span::styled(label, style));
-        spans.push(Span::raw("  "));
-        hits.push((Rect::new(x, area.y, width, 1), Hit::SetView(view)));
-        x += width + 2;
-    }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
-    app.hitmap.extend(hits);
-}
-
 fn draw_command_bar(f: &mut Frame, area: Rect, app: &App) {
     let name = app
         .dbs
@@ -142,36 +217,16 @@ fn draw_command_bar(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-const HELP: &str = "\
-pgterm
-
-DATABASES
-Tab / Shift+Tab    switch database
-a                  add database
-
-VIEWS
-1                  inspect
-2                  queries
-3                  indexes
-4                  tables
-5                  why
-Left / Right       previous / next view
-
-COMMANDS
-/                  command input
-r                  refresh
-
-GENERAL
-?                  help
-q                  quit";
-
+/// The help overlay is generated from the keymap, so it can never describe a
+/// binding that does not exist.
 fn draw_help(f: &mut Frame, area: Rect) {
-    let lines: Vec<Line> = HELP.lines().map(Line::from).collect();
-    let h = lines.len() as u16 + 2;
+    let text = crate::keymap::help_text();
+    let lines: Vec<Line> = text.lines().map(|l| Line::from(l.to_string())).collect();
+    let h = (lines.len() as u16 + 2).min(area.height);
     let [v] = Layout::vertical([Constraint::Length(h)])
         .flex(Flex::Center)
         .areas(area);
-    let [rect] = Layout::horizontal([Constraint::Length(44)])
+    let [rect] = Layout::horizontal([Constraint::Length(50)])
         .flex(Flex::Center)
         .areas(v);
     f.render_widget(Clear, rect);
@@ -185,6 +240,60 @@ fn draw_help(f: &mut Frame, area: Rect) {
     );
 }
 
+/// The command palette overlay: a query line and the filtered matches.
+fn draw_palette(f: &mut Frame, area: Rect, app: &App) -> Vec<(Rect, Hit)> {
+    let Some(state) = &app.palette else {
+        return Vec::new();
+    };
+    let items = app.palette_items();
+    let hits = crate::palette::filter(&items, &state.input);
+    let shown = hits.len().min(10);
+    let height = shown as u16 + 4;
+    let [v] = Layout::vertical([Constraint::Length(height.min(area.height))])
+        .flex(Flex::Start)
+        .areas(area.inner(Margin::new(0, 2)));
+    let [rect] = Layout::horizontal([Constraint::Length(60.min(area.width))])
+        .flex(Flex::Center)
+        .areas(v);
+    f.render_widget(Clear, rect);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("> ", Style::default().fg(Color::DarkGray)),
+            Span::raw(state.input.clone()),
+            Span::styled("█", Style::default().fg(Color::Gray)),
+        ]),
+        Line::from(""),
+    ];
+    let mut regions = Vec::new();
+    let cursor = state.cursor.min(shown.saturating_sub(1));
+    for (row, idx) in hits.iter().take(shown).enumerate() {
+        let style = if row == cursor {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(
+            format!(" {} ", items[*idx].label),
+            style,
+        )));
+        regions.push((
+            Rect::new(rect.x + 1, rect.y + 3 + row as u16, rect.width - 2, 1),
+            Hit::PaletteItem(row),
+        ));
+    }
+    if let Some(err) = &app.cmd_error {
+        lines.push(Line::from(Span::styled(
+            err.clone(),
+            Style::default().fg(Color::Red),
+        )));
+    }
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" commands ")),
+        rect,
+    );
+    regions
+}
+
 fn draw_popup(
     f: &mut Frame,
     area: Rect,
@@ -193,7 +302,7 @@ fn draw_popup(
 ) -> Vec<(Rect, Hit)> {
     let mut button_hits: Vec<(Rect, Hit)> = Vec::new();
     use crate::app::PopupField;
-    let [v] = Layout::vertical([Constraint::Length(14)])
+    let [v] = Layout::vertical([Constraint::Length(17)])
         .flex(Flex::Center)
         .areas(area);
     let [rect] = Layout::horizontal([Constraint::Length(56)])
@@ -237,6 +346,18 @@ fn draw_popup(
     let mut lines = vec![
         Line::from(Span::styled("Name", dim)),
         field_line(PopupField::Name, popup.name.clone(), "production"),
+        Line::from(""),
+        Line::from(Span::styled("Stage", dim)),
+        Line::from(vec![
+            Span::styled(
+                popup
+                    .stage
+                    .map(|s| s.label().to_string())
+                    .unwrap_or_else(|| "auto".into()),
+                field_style(PopupField::Stage),
+            ),
+            Span::styled("   ←/→  auto · prod · staging · dev · local", dim),
+        ]),
         Line::from(""),
         Line::from(Span::styled("Connection", dim)),
         field_line(
@@ -306,9 +427,9 @@ fn draw_popup(
         rect,
     );
     if show_buttons {
-        // The action row is the 9th content line inside the border; the
+        // The action row is the 12th content line inside the border; the
         // popup has a fixed layout so the offsets are stable.
-        let y = rect.y + 9;
+        let y = rect.y + 12;
         button_hits.push((Rect::new(rect.x + 1, y, 8, 1), Hit::PopupTest));
         button_hits.push((Rect::new(rect.x + 34, y, 7, 1), Hit::PopupAdd));
     }
@@ -318,7 +439,7 @@ fn draw_popup(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{Action, CmdKind, StoredResult};
+    use crate::action::{Action, CmdKind, StoredResult, View};
     use crate::config::TerminalConfig;
     use crate::model::Context;
     use ratatui::backend::TestBackend;
@@ -361,6 +482,7 @@ mod tests {
     fn healthy_dashboard_renders_score_and_rows() {
         let mut app = app_with(&["production"]);
         feed(&mut app, 0, HEALTHY);
+        pgbot_tab(&mut app);
         let s = render(&mut app, 100, 30);
         assert!(s.contains("production"), "{s}");
         assert!(s.contains("●"), "healthy glyph: {s}");
@@ -370,8 +492,9 @@ mod tests {
         assert!(s.contains("84 / 300"), "{s}");
         assert!(s.contains("99.2%"), "{s}");
         assert!(s.contains("7 healthy"), "{s}");
-        assert!(s.contains("1 Inspect"), "{s}");
-        assert!(s.contains("+ Add DB"), "{s}");
+        assert!(s.contains("2 PgBot"), "tab row: {s}");
+        assert!(s.contains("Inspect"), "sub-tab row: {s}");
+        assert!(s.contains("+ Add database"), "sidebar: {s}");
     }
 
     #[test]
@@ -379,16 +502,20 @@ mod tests {
         let mut app = app_with(&["prod", "staging"]);
         feed(&mut app, 0, HEALTHY);
         feed(&mut app, 1, WARN);
+        pgbot_tab(&mut app);
         let s = render(&mut app, 100, 30);
         assert!(s.contains("!"), "warning glyph on the staging tab: {s}");
         // Selected tab (prod) still healthy.
         assert!(s.contains("100 / 100"), "{s}");
         // Switch to staging: its dashboard shows the warn rows.
         app.select_db(1);
+        pgbot_tab(&mut app);
         let s = render(&mut app, 100, 30);
-        assert!(s.contains("94 / 100"), "{s}");
+        assert!(s.contains("91 / 100"), "{s}");
         assert!(s.contains("2 unused · 20 GiB"), "{s}");
         assert!(s.contains("2 regressions"), "{s}");
+        // The rollback finding maps to no category row, so the category
+        // summary still counts two — the findings list below shows all three.
         assert!(s.contains("2 warnings"), "{s}");
     }
 
@@ -423,18 +550,23 @@ mod tests {
             crossterm::event::KeyCode::Char('?'),
             KeyModifiers::NONE,
         )));
-        let s = render(&mut app, 100, 30);
-        assert!(s.contains("switch database"), "{s}");
-        assert!(s.contains("command input"), "{s}");
+        let s = render(&mut app, 100, 40);
+        assert!(s.contains("previous database"), "{s}");
+        assert!(s.contains("command palette"), "{s}");
     }
 
     #[test]
     fn hitmap_covers_tabs_and_shortcuts() {
         let mut app = app_with(&["prod", "staging"]);
         feed(&mut app, 0, HEALTHY);
+        pgbot_tab(&mut app);
         render(&mut app, 100, 30);
         assert!(app.hitmap.iter().any(|(_, h)| *h == Hit::SelectDb(1)));
         assert!(app.hitmap.iter().any(|(_, h)| *h == Hit::OpenAdd));
+        assert!(app
+            .hitmap
+            .iter()
+            .any(|(_, h)| *h == Hit::SetTab(crate::action::Tab::PgBot)));
         assert!(app
             .hitmap
             .iter()
@@ -460,6 +592,12 @@ mod tests {
     const INDEXES_REPORT: &str = include_str!("../tests/fixtures/indexes_report.json");
     const WHY_REPORT: &str = include_str!("../tests/fixtures/why_report.json");
 
+    /// The pgbot screens live behind the PgBot tab; these tests are about the
+    /// screens, so put the app there first.
+    fn pgbot_tab(app: &mut App) {
+        app.set_tab(crate::action::Tab::PgBot);
+    }
+
     fn press(app: &mut App, code: crossterm::event::KeyCode) -> Vec<crate::action::Effect> {
         use crossterm::event::{KeyEvent, KeyModifiers};
         app.update(Action::Key(KeyEvent::new(code, KeyModifiers::NONE)))
@@ -473,10 +611,10 @@ mod tests {
 
     #[test]
     fn queries_and_tables_views_render_the_context() {
-        use crossterm::event::KeyCode;
         let mut app = app_with(&["prod"]);
         feed(&mut app, 0, WARN);
-        press(&mut app, KeyCode::Char('2'));
+        pgbot_tab(&mut app);
+        app.set_view(crate::action::View::Queries);
         let s = render(&mut app, 110, 32);
         assert!(s.contains("QUERIES"), "{s}");
         assert!(s.contains("18.2k"), "calls column: {s}");
@@ -486,7 +624,7 @@ mod tests {
             "scrubbed text passes through: {s}"
         );
 
-        press(&mut app, KeyCode::Char('4'));
+        app.set_view(crate::action::View::Tables);
         let s = render(&mut app, 110, 32);
         assert!(s.contains("TABLES"), "{s}");
         assert!(s.contains("84 GiB"), "{s}");
@@ -504,6 +642,7 @@ mod tests {
             ))),
         });
         app.dbs[0].view = View::Indexes;
+        pgbot_tab(&mut app);
         let s = render(&mut app, 130, 32);
         assert!(s.contains("CHECK CODE"), "{s}");
         assert!(s.contains("INCONCLUSIVE"), "{s}");
@@ -523,6 +662,7 @@ mod tests {
             ))),
         });
         app.dbs[0].view = View::Why;
+        pgbot_tab(&mut app);
         let s = render(&mut app, 110, 32);
         assert!(s.contains("checkout query became 3.2x slower"), "{s}");
         assert!(s.contains("8 ms → 26 ms   +225%"), "{s}");
@@ -534,6 +674,7 @@ mod tests {
     fn inspect_view_shows_dashboard_plus_findings_report() {
         let mut app = app_with(&["prod"]);
         feed(&mut app, 0, WARN);
+        pgbot_tab(&mut app);
         let s = render(&mut app, 110, 36);
         assert!(s.contains("DATABASE HEALTH"), "{s}");
         assert!(s.contains("WARNING"), "{s}");
@@ -645,5 +786,131 @@ mod tests {
         }
         let s = render(&mut app, 100, 30);
         assert!(s.contains("billing"), "{s}");
+    }
+
+    #[test]
+    fn wide_layout_has_sidebar_badges_tabs_and_no_shortcut_row() {
+        let mut app = app_with(&["production", "staging"]);
+        feed(&mut app, 0, HEALTHY);
+        let s = render(&mut app, 120, 36);
+        assert!(s.contains("DATABASES"), "{s}");
+        assert!(s.contains("PROD") && s.contains("STAGING"), "{s}");
+        assert!(s.contains("1 Overview") && s.contains("2 PgBot"), "{s}");
+        assert!(s.contains("+ Add database"), "{s}");
+        assert!(
+            !s.contains("1 Inspect"),
+            "the old shortcut row is gone: {s}"
+        );
+        assert!(s.contains("checked 0s ago"), "sidebar detail line: {s}");
+    }
+
+    #[test]
+    fn narrow_layout_uses_the_strip_instead_of_the_sidebar() {
+        let mut app = app_with(&["production", "staging"]);
+        feed(&mut app, 0, HEALTHY);
+        let s = render(&mut app, 90, 30);
+        assert!(!s.contains("DATABASES"), "{s}");
+        assert!(s.contains("production") && s.contains("+ Add DB"), "{s}");
+        assert!(s.contains("1 Overview"), "{s}");
+    }
+
+    #[test]
+    fn overview_renders_status_tiles_gauges_and_findings() {
+        let mut app = app_with(&["production"]);
+        feed(&mut app, 0, WARN);
+        let s = render(&mut app, 120, 44);
+        assert!(s.contains("● Connected · PostgreSQL 17"), "{s}");
+        assert!(s.contains("RDS"), "provider in the status line: {s}");
+        assert!(s.contains("Connections") && s.contains("84 / 300"), "{s}");
+        assert!(s.contains("cache hit"), "{s}");
+        assert!(s.contains("rollbacks") && s.contains("watch"), "{s}");
+        assert!(s.contains("findings need attention"), "{s}");
+        assert!(s.contains("confidence"), "{s}");
+        assert!(s.contains("✓ "), "healthy categories listed: {s}");
+    }
+
+    #[test]
+    fn unavailable_overview_offers_retry() {
+        let mut app = app_with(&["production"]);
+        app.update(Action::CheckFinished {
+            db: 0,
+            kind: CmdKind::Monitor,
+            result: Err(crate::sanitize::SafeError::new(
+                crate::sanitize::ErrorKind::ConnectionFailed,
+                "connection refused",
+                None,
+            )),
+        });
+        let s = render(&mut app, 120, 30);
+        assert!(s.contains("○ Unavailable") && s.contains("r retry"), "{s}");
+    }
+
+    #[test]
+    fn pgbot_tab_shows_subtabs_and_the_existing_screens() {
+        let mut app = app_with(&["production"]);
+        feed(&mut app, 0, HEALTHY);
+        press(&mut app, crossterm::event::KeyCode::Char('2'));
+        let s = render(&mut app, 120, 36);
+        assert!(
+            s.contains("Inspect") && s.contains("Queries") && s.contains("Why"),
+            "{s}"
+        );
+        assert!(s.contains("DATABASE HEALTH"), "{s}");
+    }
+
+    #[test]
+    fn palette_toast_and_help_render() {
+        let mut app = app_with(&["production", "staging"]);
+        press(&mut app, crossterm::event::KeyCode::Char(':'));
+        let s = render(&mut app, 120, 36);
+        assert!(
+            s.contains("switch to staging") && s.contains("refresh"),
+            "{s}"
+        );
+        press(&mut app, crossterm::event::KeyCode::Esc);
+        app.toast = Some(crate::app::Toast {
+            text: "staging is critical · [ to open".into(),
+            until: std::time::Instant::now() + std::time::Duration::from_secs(5),
+        });
+        let s = render(&mut app, 120, 36);
+        assert!(s.contains("staging is critical"), "{s}");
+        press(&mut app, crossterm::event::KeyCode::Char('?'));
+        let s = render(&mut app, 120, 44);
+        assert!(
+            s.contains("previous database") && s.contains("command palette"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn sidebar_detail_lines_can_be_turned_off() {
+        let mut app = app_with(&["production"]);
+        feed(&mut app, 0, HEALTHY);
+        let sidebar_only = |app: &mut App| -> String {
+            render(app, 120, 30)
+                .lines()
+                .map(|l| l.chars().take(25).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(
+            sidebar_only(&mut app).contains("checked"),
+            "detail on by default"
+        );
+        app.ui.sidebar_detail = false;
+        let off = sidebar_only(&mut app);
+        assert!(!off.contains("checked"), "detail off: {off}");
+        assert!(off.contains("production"), "the row itself stays: {off}");
+    }
+
+    /// Not an assertion — prints the shell so a human can look at it:
+    /// `cargo test --lib show_shell -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn show_shell() {
+        let mut app = app_with(&["production", "staging", "analytics"]);
+        feed(&mut app, 0, WARN);
+        feed(&mut app, 1, HEALTHY);
+        println!("{}", render(&mut app, 120, 40));
     }
 }

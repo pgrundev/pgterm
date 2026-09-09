@@ -304,7 +304,7 @@ mod tests {
 
         let w = Context::decode(WARN).unwrap();
         assert_eq!(overall(&w), HealthStatus::Warning);
-        assert_eq!(score(&w), 100 - 3 - 3);
+        assert_eq!(score(&w), 100 - 3 - 3 - 3);
 
         let c = Context::decode(CRITICAL).unwrap();
         assert_eq!(overall(&c), HealthStatus::Critical);

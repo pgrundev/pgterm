@@ -66,6 +66,10 @@ pub fn draw_first_run(f: &mut Frame, area: Rect) {
             Line::from(vec![
                 Span::styled("[a]", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(" Add database   "),
+                Span::styled("[:]", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(" Commands   "),
+                Span::styled("[?]", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(" Help   "),
                 Span::styled("[q]", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(" Quit"),
             ]),

@@ -26,6 +26,10 @@ fn main() {
         }
         Invocation::Usage(msg) => cli::print_usage_error(&msg),
         Invocation::List => cli::cmd_list(),
+        Invocation::DefaultConfig => {
+            print!("{}", pgterm::config::DEFAULT_CONFIG_TEXT);
+            0
+        }
         Invocation::Remove(name) => cli::cmd_remove(&name),
         Invocation::Add(opts) => {
             let code = runtime().block_on(cli::cmd_add(&opts));
@@ -121,6 +125,13 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, mut app: App) -> an
             effects.extend(app.update(a));
         }
         perform(&app, effects, &tx, &sem);
+        // A toast for a database you are not looking at may also ring the bell.
+        if app.take_bell() {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x07");
+            let _ = out.flush();
+        }
         if app.should_quit {
             return Ok(());
         }
@@ -151,14 +162,16 @@ fn perform(
                 name,
                 source,
                 save,
+                stage,
                 persist_env,
             } => {
                 let bin = app.pgbot_bin.clone();
                 let tx = tx.clone();
                 let sem = sem.clone();
                 tokio::spawn(async move {
-                    let _ =
-                        tx.send(app::run_probe(bin, name, source, save, persist_env, sem).await);
+                    let _ = tx.send(
+                        app::run_probe(bin, name, source, save, stage, persist_env, sem).await,
+                    );
                 });
             }
         }
