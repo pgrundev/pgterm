@@ -5,6 +5,7 @@ pub mod action;
 pub mod app;
 pub mod cli;
 pub mod config;
+pub mod db;
 pub mod event;
 pub mod format;
 pub mod health;

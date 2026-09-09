@@ -110,6 +110,8 @@ pub enum ErrorKind {
     PgrunMissing,
     /// pgrun ran and reported a failure (not logged in, no such project, …).
     PgrunFailed,
+    /// PostgreSQL rejected a statement pgterm sent on the user's behalf.
+    QueryFailed,
 }
 
 /// An error safe to render: the message was redacted at construction, so no
@@ -146,6 +148,7 @@ impl fmt::Display for SafeError {
             ErrorKind::Usage => "internal error (bad pgbot invocation)",
             ErrorKind::PgrunMissing => "pgrun not found",
             ErrorKind::PgrunFailed => "pgrun",
+            ErrorKind::QueryFailed => "postgres",
         };
         if self.message.is_empty() {
             write!(f, "{label}")?;
