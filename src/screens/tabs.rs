@@ -10,7 +10,7 @@ use ratatui::Frame;
 use crate::action::{Hit, Tab, View};
 use crate::app::{App, DbState};
 use crate::format;
-use crate::ui::tab_glyph;
+use crate::ui::{hover_style, tab_glyph};
 
 pub fn draw_tab_row(f: &mut Frame, area: Rect, app: &App) -> Vec<(Rect, Hit)> {
     let Some(db) = app.dbs.get(app.selected) else {
@@ -30,6 +30,7 @@ pub fn draw_tab_row(f: &mut Frame, area: Rect, app: &App) -> Vec<(Rect, Hit)> {
         if tab == Tab::PgBot && db.pgbot_changed() {
             style = style.add_modifier(Modifier::BOLD);
         }
+        let style = hover_style(style, app.hover == Some(Hit::SetTab(tab)));
         spans.push(Span::styled(label, style));
         spans.push(Span::raw(" "));
         hits.push((Rect::new(x, area.y, w, 1), Hit::SetTab(tab)));
@@ -55,7 +56,12 @@ pub fn draw_tab_row(f: &mut Frame, area: Rect, app: &App) -> Vec<(Rect, Hit)> {
     hits
 }
 
-pub fn draw_subtabs(f: &mut Frame, area: Rect, db: &DbState) -> Vec<(Rect, Hit)> {
+pub fn draw_subtabs(
+    f: &mut Frame,
+    area: Rect,
+    db: &DbState,
+    hover: Option<&Hit>,
+) -> Vec<(Rect, Hit)> {
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     let mut hits = Vec::new();
     let mut x = area.x + 1;
@@ -71,6 +77,7 @@ pub fn draw_subtabs(f: &mut Frame, area: Rect, db: &DbState) -> Vec<(Rect, Hit)>
         } else {
             Style::default().fg(Color::Gray)
         };
+        let style = hover_style(style, hover == Some(&Hit::SetView(view)));
         spans.push(Span::styled(label, style));
         spans.push(Span::raw(" "));
         hits.push((Rect::new(x, area.y, w, 1), Hit::SetView(view)));

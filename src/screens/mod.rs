@@ -2,12 +2,15 @@
 //! into the body area; fetching happens elsewhere (App::update effects).
 
 pub mod ask;
+pub mod branches;
+pub mod data;
 pub mod health;
 pub mod indexes;
 pub mod inspect;
 pub mod overview;
 pub mod queries;
 pub mod sidebar;
+pub mod sql;
 pub mod states;
 pub mod tables;
 pub mod tabs;

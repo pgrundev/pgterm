@@ -114,6 +114,9 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, mut app: App) -> an
     }
 
     let sem = Arc::new(Semaphore::new(app.max_concurrent));
+    // One Postgres connection per database, opened only by the SQL and Data
+    // tabs and shared across their queries.
+    let conns = Arc::new(tokio::sync::Mutex::new(app::Connections::default()));
     loop {
         terminal.draw(|f| ui::draw(f, &mut app))?;
         let Some(action) = rx.recv().await else {
@@ -124,7 +127,7 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, mut app: App) -> an
         while let Ok(a) = rx.try_recv() {
             effects.extend(app.update(a));
         }
-        perform(&app, effects, &tx, &sem);
+        perform(&app, effects, &tx, &sem, &conns);
         // A toast for a database you are not looking at may also ring the bell.
         if app.take_bell() {
             use std::io::Write;
@@ -143,6 +146,7 @@ fn perform(
     effects: Vec<Effect>,
     tx: &mpsc::UnboundedSender<Action>,
     sem: &Arc<Semaphore>,
+    conns: &Arc<tokio::sync::Mutex<app::Connections>>,
 ) {
     for e in effects {
         match e {
@@ -156,6 +160,30 @@ fn perform(
                 let sem = sem.clone();
                 tokio::spawn(async move {
                     let _ = tx.send(app::run_effect(bin, source, db, cmd, kind, sem).await);
+                });
+            }
+            Effect::SpawnSql {
+                db,
+                target,
+                sql,
+                policy,
+            } => {
+                let Some(state) = app.dbs.get(db) else {
+                    continue;
+                };
+                let source = state.source.clone();
+                let tx = tx.clone();
+                let conns = conns.clone();
+                tokio::spawn(async move {
+                    let _ =
+                        tx.send(app::run_sql_effect(conns, db, source, target, sql, policy).await);
+                });
+            }
+            Effect::SpawnPgrun { db, cmd, open } => {
+                let bin = pgterm::pgrun::pgrun_bin();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(app::run_pgrun_effect(bin, db, cmd, open).await);
                 });
             }
             Effect::SpawnProbe {

@@ -37,12 +37,20 @@ impl View {
 pub enum Tab {
     Overview,
     PgBot,
+    Sql,
+    Data,
+    Branches,
 }
 
 impl Tab {
     /// The tab row: number key ↔ tab.
-    pub const NUMBERED: [(char, Tab, &'static str); 2] =
-        [('1', Tab::Overview, "Overview"), ('2', Tab::PgBot, "PgBot")];
+    pub const NUMBERED: [(char, Tab, &'static str); 5] = [
+        ('1', Tab::Overview, "Overview"),
+        ('2', Tab::PgBot, "PgBot"),
+        ('3', Tab::Sql, "SQL"),
+        ('4', Tab::Data, "Data"),
+        ('5', Tab::Branches, "Branches"),
+    ];
 }
 
 /// Which pane holds keyboard focus while `Focus::Main`.
@@ -83,6 +91,22 @@ pub enum Action {
         kind: CmdKind,
         result: Result<StoredResult, SafeError>,
     },
+    /// A SQL run finished (the SQL tab, or one of the Data browser's queries).
+    SqlFinished {
+        db: usize,
+        target: crate::action::SqlTarget,
+        result: Result<Box<crate::db::QueryResult>, crate::sanitize::SafeError>,
+    },
+    /// A pgrun branch call finished for one database.
+    BranchesFinished {
+        db: usize,
+        result: Result<Vec<crate::pgrun::Branch>, SafeError>,
+    },
+    /// `branch get` finished: the branch carries its connection URL.
+    BranchOpened {
+        db: usize,
+        result: Result<Box<crate::pgrun::Branch>, SafeError>,
+    },
     /// A popup-driven probe finished (the database does not exist yet).
     ProbeFinished {
         name: String,
@@ -100,6 +124,19 @@ pub enum Action {
     Quit,
 }
 
+/// Which surface asked for a SQL run, so its answer lands in the right place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlTarget {
+    /// The SQL tab's editor.
+    Editor,
+    /// The Data browser's schema list.
+    Schemas,
+    /// The tables of one schema.
+    Tables(String),
+    /// One page of rows from a table.
+    Rows { schema: String, table: String },
+}
+
 /// Side effects `update` asks the runtime to perform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
@@ -107,6 +144,20 @@ pub enum Effect {
         db: usize,
         cmd: PgbotCommand,
         kind: CmdKind,
+    },
+    /// Run SQL against a database's own connection.
+    SpawnSql {
+        db: usize,
+        target: SqlTarget,
+        sql: String,
+        policy: crate::db::WritePolicy,
+    },
+    /// Ask pgrun for a database's branches, or for one branch's URL.
+    SpawnPgrun {
+        db: usize,
+        cmd: crate::pgrun::PgrunCommand,
+        /// Set when the answer should open the branch as a session tab.
+        open: bool,
     },
     SpawnProbe {
         name: String,
@@ -124,6 +175,12 @@ pub enum Hit {
     OpenAdd,
     SetView(View),
     SetTab(Tab),
+    /// Row index within the selected database's branch list.
+    SelectBranch(usize),
+    /// A schema row in the Data browser.
+    SelectSchema(usize),
+    /// A table row in the Data browser.
+    SelectTable(usize),
     OpenPalette,
     /// Row index within the palette's currently filtered list.
     PaletteItem(usize),

@@ -6,7 +6,7 @@ monitors every database you care about in one place, powered by
 
 ```
  pgterm   ▸ production  PROD                                                                        ^K commands  ? help
- DATABASES               │  1 Overview   2 PgBot                                               ! PostgreSQL 17 · 0s ago
+ DATABASES               │  1 Overview   2 PgBot   3 SQL   4 Data   5 Branches                 ! PostgreSQL 17 · 0s ago
                          │──────────────────────────────────────────────────────────────────────────────────────────────
   ! production      PROD │ production  PROD                                                        r refresh   2 pgbot
     2 indexes with zero  │ ● Connected · PostgreSQL 17.4 · RDS · up 10d · checked 0s ago
@@ -33,8 +33,11 @@ monitors every database you care about in one place, powered by
 
 One row per database in the sidebar, badged by environment. pgterm checks
 them all in the background and flags the one that needs attention without
-stealing focus from the one you're looking at. Overview answers "is this
-database healthy" at a glance; the PgBot tab has the full diagnostics.
+stealing focus from the one you're looking at.
+
+Five tabs per database: **Overview** answers "is this healthy" at a glance,
+**PgBot** has the full diagnostics, **SQL** runs a query, **Data** browses
+schemas and tables, and **Branches** lists the database's pgrun branches.
 
 Below 100 columns the sidebar collapses to a tab strip and everything else
 stays put, so pgterm still works in a split pane.
@@ -181,6 +184,9 @@ Tab / S-Tab        focus sidebar / main pane
 ]                  next database
 1                  overview tab
 2                  pgbot tab
+3                  sql tab
+4                  data tab
+5                  branches tab
 C-k / :            command palette
 /                  command bar (verbs, ask …)
 a                  add database
@@ -193,6 +199,16 @@ Enter              open the selected database
 
 OVERVIEW
 Enter              open pgbot findings
+
+SQL TAB
+F5                 run the query (Ctrl-Enter too)
+
+DATA TAB
+Enter              open the schema, table, or rows
+Esc                back up one level
+
+BRANCHES TAB
+Enter              open the branch as a tab
 
 PGBOT TAB
 Left / h           previous pgbot view
@@ -211,7 +227,7 @@ against it too.
 
 - `Tab` / `Shift+Tab` now move between the sidebar and the main pane. `[` and
   `]` switch databases.
-- Number keys pick tabs (`1` Overview, `2` PgBot). Inside PgBot, `←`/`→` or
+- Number keys pick tabs (`1` Overview, `2` PgBot, `3` SQL, `4` Data, `5` Branches). Inside PgBot, `←`/`→` or
   `h`/`l` step through Inspect · Queries · Indexes · Tables · Why.
 - `Ctrl-K` (or `:`) opens the command palette. `/` is still the command bar.
 
@@ -230,6 +246,54 @@ from the same JSON by the same rules so the two never disagree:
 Under them, the findings that need attention with pgbot's own confidence, then
 a `✓` line per subsystem that came back clean. Press `Enter` (or `2`) for the
 full report.
+
+## SQL and Data
+
+The SQL tab runs a query against the database and shows the rows. The Data
+tab browses schemas, then tables with size and row estimates, then a page of
+rows.
+
+Both use pgterm's own connection, and both are fenced:
+
+- **Every statement runs in a transaction that is `READ ONLY`** unless the
+  profile opts in with `writes = true`. The server refuses the write, not a
+  keyword check of ours, so there is nothing to trick.
+- On a **PROD**-badged database with writes enabled, a statement that looks
+  like a write asks you to type the database name first.
+- `statement_timeout` is 30s and rows are capped, so a stray `SELECT *`
+  cannot hang the UI or pull a billion rows into it.
+- The Data browser is read-only whatever the profile allows. Browsing is
+  never a way to change something.
+
+```toml
+[[databases]]
+name = "staging"
+env = "STAGING_DATABASE_URL"
+writes = true    # lift READ ONLY for this database only
+```
+
+TLS follows the connection string's own `sslmode`; pgterm never weakens it.
+Nothing you type is written to disk.
+
+## Branches
+
+When a database has a pgrun project, its branches appear in the sidebar and
+on the Branches tab:
+
+```toml
+[[databases]]
+name = "production"
+env = "PROD_DATABASE_URL"
+pgrun_project = "acme-api"   # `pgrun project list` shows your projects
+```
+
+`Enter` on a branch opens it as its own tab. The connection URL comes from
+pgrun at that moment, lives in memory for the session, and is never written
+to config — the tab is gone when you quit. Creating and deleting branches
+stays in the pgrun CLI, where the confirmations already live.
+
+Needs [pgrun](https://github.com/pgrundev/pgrun-cli) on your PATH (or
+`PGRUN_BIN`), logged in. Without it the tab says so instead of failing.
 
 ## Stages and badges
 

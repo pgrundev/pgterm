@@ -12,13 +12,17 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 use ratatui::layout::Rect;
 use tokio::sync::Semaphore;
 
+use crate::action::SqlTarget;
 use crate::action::{Action, CmdKind, Effect, Hit, Pane, StoredResult, Tab, View};
 use crate::config::{DatabaseProfile, Stage, TerminalConfig, UiSettings};
+use crate::db::{QueryResult, WritePolicy};
+use crate::editor::Editor;
 use crate::health::{self, HealthStatus};
 use crate::keymap::{self, KeyAction, KeyContext};
 use crate::model::{Context, IndexesReport, WhyReport};
 use crate::palette::{self, PaletteCmd, PaletteItem, PaletteState};
 use crate::parser::UserCommand;
+use crate::pgrun::{self, Branch, PgrunCommand};
 use crate::runner::{self, ConnSource, PgbotCommand, RunOutcome};
 use crate::sanitize::SafeError;
 
@@ -88,6 +92,30 @@ pub struct DbState {
     pub tab: Tab,
     pub view: View,
     pub ctx: Option<Context>,
+    /// The SQL tab's editor buffer, its last result, and what is in flight.
+    pub sql: Editor,
+    pub sql_result: Option<QueryResult>,
+    pub sql_error: Option<SafeError>,
+    pub sql_running: bool,
+    pub sql_scroll: u16,
+    /// Set while a write on a PROD database is waiting to be confirmed by
+    /// typing the database name.
+    pub sql_confirm: Option<String>,
+    /// The Data browser: schemas, the tables of the chosen one, and a page of
+    /// rows from the chosen table.
+    pub data_schemas: Option<Vec<String>>,
+    pub data_tables: Option<Vec<(String, String, String)>>,
+    pub data_rows: Option<QueryResult>,
+    pub data_error: Option<SafeError>,
+    pub data_schema_cursor: usize,
+    pub data_table_cursor: usize,
+    pub data_level: DataLevel,
+    pub data_loading: bool,
+    /// This database's pgrun branches, once fetched.
+    pub branches: Option<Vec<Branch>>,
+    pub branch_error: Option<SafeError>,
+    pub branch_cursor: usize,
+    pub branches_loading: bool,
     /// Non-suppressed finding ids from the latest check, sorted.
     pub findings_now: Option<Vec<String>>,
     /// The set that was on screen the last time the PgBot tab was viewed.
@@ -115,6 +143,24 @@ impl DbState {
             tab: Tab::Overview,
             view: View::Inspect,
             ctx: None,
+            sql: Editor::new(),
+            sql_result: None,
+            sql_error: None,
+            sql_running: false,
+            sql_scroll: 0,
+            sql_confirm: None,
+            data_schemas: None,
+            data_tables: None,
+            data_rows: None,
+            data_error: None,
+            data_schema_cursor: 0,
+            data_table_cursor: 0,
+            data_level: DataLevel::Schemas,
+            data_loading: false,
+            branches: None,
+            branch_error: None,
+            branch_cursor: 0,
+            branches_loading: false,
             findings_now: None,
             findings_seen: None,
             indexes: None,
@@ -133,6 +179,8 @@ impl DbState {
             name: name.to_string(),
             env: String::new(),
             stage: None,
+            pgrun_project: None,
+            writes: false,
         });
         db.source = ConnSource::Session(url);
         db
@@ -167,6 +215,15 @@ impl DbState {
             .map(|(_, kind)| self.running.contains(&kind))
             .unwrap_or(false)
     }
+}
+
+/// Where the Data browser is: schemas, then that schema's tables, then a page
+/// of one table's rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataLevel {
+    Schemas,
+    Tables,
+    Rows,
 }
 
 /// The pgbot command (and dedupe kind) behind each view.
@@ -204,6 +261,9 @@ pub struct App {
     pub size: (u16, u16),
     /// Interactive regions, rebuilt by every draw pass.
     pub hitmap: Vec<(Rect, Hit)>,
+    /// What the pointer is currently over, so the draw pass can show that it
+    /// is clickable. Set from mouse motion, cleared when it leaves.
+    pub hover: Option<Hit>,
     pub version_note: Option<String>,
 }
 
@@ -241,6 +301,7 @@ impl App {
             pgbot_bin: runner::pgbot_bin(),
             size: (0, 0),
             hitmap: Vec::new(),
+            hover: None,
             version_note: None,
         }
     }
@@ -284,15 +345,413 @@ impl App {
             return Vec::new();
         };
         db.tab = tab;
-        if tab == Tab::PgBot {
-            db.mark_pgbot_seen();
-            let view = db.view;
-            return self.set_view(view);
+        match tab {
+            Tab::PgBot => {
+                db.mark_pgbot_seen();
+                let view = db.view;
+                self.set_view(view)
+            }
+            Tab::Branches if db.branches.is_none() => self.refresh_branches(),
+            Tab::Data if db.data_schemas.is_none() => self.load_schemas(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Which key contexts apply right now, most specific first.
+    /// Ask pgrun for the selected database's branches. Needs a configured
+    /// project; nothing is spawned without one, and one call at a time.
+    pub fn refresh_branches(&mut self) -> Vec<Effect> {
+        let selected = self.selected;
+        let Some(db) = self.dbs.get_mut(selected) else {
+            return Vec::new();
+        };
+        let Some(project) = db.profile.pgrun_project.clone() else {
+            return Vec::new();
+        };
+        if db.branches_loading {
+            return Vec::new();
+        }
+        db.branches_loading = true;
+        db.branch_error = None;
+        vec![Effect::SpawnPgrun {
+            db: selected,
+            cmd: PgrunCommand::List(project),
+            open: false,
+        }]
+    }
+
+    /// Enter on a branch: fetch its connection URL, which only `branch get`
+    /// returns. The URL never touches config — it becomes a session tab.
+    pub fn open_selected_branch(&mut self) -> Vec<Effect> {
+        let selected = self.selected;
+        let Some(db) = self.dbs.get(selected) else {
+            return Vec::new();
+        };
+        let Some(project) = db.profile.pgrun_project.clone() else {
+            return Vec::new();
+        };
+        let Some(branch) = db
+            .branches
+            .as_ref()
+            .and_then(|bs| bs.get(db.branch_cursor))
+            .filter(|b| !b.in_progress() && !b.failed())
+        else {
+            return Vec::new();
+        };
+        vec![Effect::SpawnPgrun {
+            db: selected,
+            cmd: PgrunCommand::Get {
+                project,
+                branch: branch.name.clone(),
+            },
+            open: true,
+        }]
+    }
+
+    fn on_branch_opened(
+        &mut self,
+        db: usize,
+        result: Result<Box<Branch>, SafeError>,
+    ) -> Vec<Effect> {
+        let branch = match result {
+            Ok(b) => b,
+            Err(e) => {
+                if let Some(state) = self.dbs.get_mut(db) {
+                    state.branch_error = Some(e);
+                }
+                return Vec::new();
+            }
+        };
+        let Some(url) = branch.connection_url.clone() else {
+            if let Some(state) = self.dbs.get_mut(db) {
+                state.branch_error = Some(SafeError::new(
+                    crate::sanitize::ErrorKind::BadOutput,
+                    "pgrun returned no connection URL for that branch",
+                    None,
+                ));
+            }
+            return Vec::new();
+        };
+        // Name the tab after the branch, disambiguated against what is open.
+        let base = format!(
+            "{}/{}",
+            self.dbs
+                .get(db)
+                .map(|d| d.profile.name.as_str())
+                .unwrap_or("branch"),
+            branch.name
+        );
+        let mut name = base.clone();
+        let mut n = 2;
+        while self.dbs.iter().any(|d| d.profile.name == name) {
+            name = format!("{base}-{n}");
+            n += 1;
+        }
+        let mut state = DbState::session(&name, url);
+        state.profile.stage = Some(crate::config::Stage::Dev);
+        self.dbs.push(state);
+        let idx = self.dbs.len() - 1;
+        self.selected = idx;
+        self.pane = Pane::Main;
+        self.dbs[idx].running.insert(CmdKind::Monitor);
+        vec![Effect::Spawn {
+            db: idx,
+            cmd: PgbotCommand::Monitor,
+            kind: CmdKind::Monitor,
+        }]
+    }
+
+    /// F5 / Ctrl-Enter in the SQL tab. A write on a PROD database asks for the
+    /// database name first; the READ ONLY transaction is what actually stops a
+    /// write everywhere else.
+    pub fn run_sql(&mut self) -> Vec<Effect> {
+        let selected = self.selected;
+        let Some(db) = self.dbs.get_mut(selected) else {
+            return Vec::new();
+        };
+        if db.sql_running || db.sql.is_empty() {
+            return Vec::new();
+        }
+        let sql = db.sql.text();
+        let policy = db.profile.write_policy();
+        if policy == WritePolicy::ConfirmWrites
+            && crate::db::looks_like_write(&sql)
+            && db.sql_confirm.is_none()
+        {
+            db.sql_confirm = Some(String::new());
+            return Vec::new();
+        }
+        db.sql_confirm = None;
+        db.sql_running = true;
+        db.sql_error = None;
+        vec![Effect::SpawnSql {
+            db: selected,
+            target: SqlTarget::Editor,
+            sql,
+            policy,
+        }]
+    }
+
+    /// Everything the Data browser asks for is read-only, whatever the profile
+    /// allows: browsing is never a way to change something.
+    fn data_query(&mut self, target: SqlTarget, sql: String) -> Vec<Effect> {
+        let selected = self.selected;
+        let Some(db) = self.dbs.get_mut(selected) else {
+            return Vec::new();
+        };
+        db.data_loading = true;
+        db.data_error = None;
+        vec![Effect::SpawnSql {
+            db: selected,
+            target,
+            sql,
+            policy: WritePolicy::ReadOnly,
+        }]
+    }
+
+    pub fn load_schemas(&mut self) -> Vec<Effect> {
+        self.data_query(SqlTarget::Schemas, crate::db::SCHEMAS_SQL.to_string())
+    }
+
+    /// Enter in the Data browser: descend a level.
+    pub fn data_enter(&mut self) -> Vec<Effect> {
+        let selected = self.selected;
+        let Some(db) = self.dbs.get(selected) else {
+            return Vec::new();
+        };
+        match db.data_level {
+            DataLevel::Schemas => {
+                let Some(schema) = db
+                    .data_schemas
+                    .as_ref()
+                    .and_then(|s| s.get(db.data_schema_cursor))
+                    .cloned()
+                else {
+                    return Vec::new();
+                };
+                if let Some(db) = self.dbs.get_mut(selected) {
+                    db.data_level = DataLevel::Tables;
+                    db.data_tables = None;
+                    db.data_table_cursor = 0;
+                }
+                self.data_query(
+                    SqlTarget::Tables(schema.clone()),
+                    crate::db::tables_sql(&schema),
+                )
+            }
+            DataLevel::Tables => {
+                let (Some(schema), Some(table)) = (
+                    db.data_schemas
+                        .as_ref()
+                        .and_then(|s| s.get(db.data_schema_cursor))
+                        .cloned(),
+                    db.data_tables
+                        .as_ref()
+                        .and_then(|t| t.get(db.data_table_cursor))
+                        .map(|(n, _, _)| n.clone()),
+                ) else {
+                    return Vec::new();
+                };
+                if let Some(db) = self.dbs.get_mut(selected) {
+                    db.data_level = DataLevel::Rows;
+                    db.data_rows = None;
+                }
+                self.data_query(
+                    SqlTarget::Rows {
+                        schema: schema.clone(),
+                        table: table.clone(),
+                    },
+                    crate::db::rows_sql(&schema, &table, 0),
+                )
+            }
+            DataLevel::Rows => Vec::new(),
+        }
+    }
+
+    /// Esc in the Data browser: back up a level.
+    pub fn data_back(&mut self) -> bool {
+        let Some(db) = self.dbs.get_mut(self.selected) else {
+            return false;
+        };
+        match db.data_level {
+            DataLevel::Rows => {
+                db.data_level = DataLevel::Tables;
+                db.data_rows = None;
+                true
+            }
+            DataLevel::Tables => {
+                db.data_level = DataLevel::Schemas;
+                db.data_tables = None;
+                true
+            }
+            DataLevel::Schemas => false,
+        }
+    }
+
+    fn on_sql_finished(
+        &mut self,
+        db: usize,
+        target: SqlTarget,
+        result: Result<QueryResult, SafeError>,
+    ) -> Vec<Effect> {
+        let Some(state) = self.dbs.get_mut(db) else {
+            return Vec::new();
+        };
+        match target {
+            SqlTarget::Editor => {
+                state.sql_running = false;
+                state.sql_scroll = 0;
+                match result {
+                    Ok(r) => {
+                        state.sql_result = Some(r);
+                        state.sql_error = None;
+                    }
+                    Err(e) => state.sql_error = Some(e),
+                }
+            }
+            SqlTarget::Schemas => {
+                state.data_loading = false;
+                match result {
+                    Ok(r) => {
+                        let names: Vec<String> = r
+                            .rows
+                            .iter()
+                            .filter_map(|row| row.first().cloned())
+                            .collect();
+                        state.data_schema_cursor =
+                            state.data_schema_cursor.min(names.len().saturating_sub(1));
+                        state.data_schemas = Some(names);
+                        state.data_error = None;
+                    }
+                    Err(e) => state.data_error = Some(e),
+                }
+            }
+            SqlTarget::Tables(_) => {
+                state.data_loading = false;
+                match result {
+                    Ok(r) => {
+                        let rows: Vec<(String, String, String)> = r
+                            .rows
+                            .iter()
+                            .map(|row| {
+                                (
+                                    row.first().cloned().unwrap_or_default(),
+                                    row.get(1).cloned().unwrap_or_default(),
+                                    row.get(2).cloned().unwrap_or_default(),
+                                )
+                            })
+                            .collect();
+                        state.data_table_cursor =
+                            state.data_table_cursor.min(rows.len().saturating_sub(1));
+                        state.data_tables = Some(rows);
+                        state.data_error = None;
+                    }
+                    Err(e) => state.data_error = Some(e),
+                }
+            }
+            SqlTarget::Rows { .. } => {
+                state.data_loading = false;
+                match result {
+                    Ok(r) => {
+                        state.data_rows = Some(r);
+                        state.data_error = None;
+                    }
+                    Err(e) => state.data_error = Some(e),
+                }
+            }
         }
         Vec::new()
     }
 
-    /// Which key contexts apply right now, most specific first.
+    /// Typed input while the SQL tab has focus, including the confirm prompt.
+    fn handle_sql_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
+        let selected = self.selected;
+        if self.dbs.get(selected).map(|d| d.tab) != Some(Tab::Sql) || self.pane != Pane::Main {
+            return None;
+        }
+        // Ctrl-Enter and F5 run; they are not text.
+        if key.code == KeyCode::F(5)
+            || (key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::CONTROL))
+        {
+            return Some(self.run_sql());
+        }
+        let name = self.dbs.get(selected)?.profile.name.clone();
+        let db = self.dbs.get_mut(selected)?;
+        if let Some(typed) = db.sql_confirm.as_mut() {
+            match key.code {
+                KeyCode::Esc => {
+                    db.sql_confirm = None;
+                }
+                KeyCode::Backspace => {
+                    typed.pop();
+                }
+                KeyCode::Char(c) => typed.push(c),
+                KeyCode::Enter => {
+                    if typed.trim() == name {
+                        db.sql_confirm = None;
+                        db.sql_running = true;
+                        db.sql_error = None;
+                        let sql = db.sql.text();
+                        let policy = db.profile.write_policy();
+                        return Some(vec![Effect::SpawnSql {
+                            db: selected,
+                            target: SqlTarget::Editor,
+                            sql,
+                            policy,
+                        }]);
+                    }
+                }
+                _ => {}
+            }
+            return Some(Vec::new());
+        }
+        match key.code {
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => db.sql.insert(c),
+            KeyCode::Enter => db.sql.newline(),
+            KeyCode::Backspace => db.sql.backspace(),
+            KeyCode::Delete => db.sql.delete(),
+            KeyCode::Left => db.sql.left(),
+            KeyCode::Right => db.sql.right(),
+            KeyCode::Up => db.sql.up(),
+            KeyCode::Down => db.sql.down(),
+            KeyCode::Home => db.sql.home(),
+            KeyCode::End => db.sql.end(),
+            KeyCode::Esc => {
+                self.pane = Pane::Sidebar;
+            }
+            _ => return None,
+        }
+        Some(Vec::new())
+    }
+
+    fn on_branches_tab(&self) -> bool {
+        self.on_tab(Tab::Branches)
+    }
+
+    fn on_tab(&self, tab: Tab) -> bool {
+        self.dbs.get(self.selected).map(|d| d.tab) == Some(tab)
+    }
+
+    /// Move the cursor at whichever level of the Data browser is showing.
+    fn data_move(&mut self, delta: i64) {
+        let Some(db) = self.dbs.get_mut(self.selected) else {
+            return;
+        };
+        let (cursor, len) = match db.data_level {
+            DataLevel::Schemas => (
+                &mut db.data_schema_cursor,
+                db.data_schemas.as_ref().map(|s| s.len()).unwrap_or(0),
+            ),
+            DataLevel::Tables => (
+                &mut db.data_table_cursor,
+                db.data_tables.as_ref().map(|t| t.len()).unwrap_or(0),
+            ),
+            DataLevel::Rows => return,
+        };
+        let next = (*cursor as i64 + delta).clamp(0, len.saturating_sub(1) as i64);
+        *cursor = next as usize;
+    }
+
     fn key_contexts(&self) -> Vec<KeyContext> {
         let mut v = Vec::with_capacity(2);
         if self.pane == Pane::Sidebar {
@@ -301,6 +760,9 @@ impl App {
             v.push(match db.tab {
                 Tab::Overview => KeyContext::Overview,
                 Tab::PgBot => KeyContext::PgBot,
+                Tab::Sql => KeyContext::Sql,
+                Tab::Data => KeyContext::Data,
+                Tab::Branches => KeyContext::Branches,
             });
         }
         v.push(KeyContext::Main);
@@ -322,6 +784,25 @@ impl App {
                 self.on_check_finished(db, kind, result);
                 Vec::new()
             }
+            Action::SqlFinished { db, target, result } => {
+                self.on_sql_finished(db, target, result.map(|b| *b))
+            }
+            Action::BranchesFinished { db, result } => {
+                if let Some(state) = self.dbs.get_mut(db) {
+                    state.branches_loading = false;
+                    match result {
+                        Ok(bs) => {
+                            state.branch_cursor =
+                                state.branch_cursor.min(bs.len().saturating_sub(1));
+                            state.branches = Some(bs);
+                            state.branch_error = None;
+                        }
+                        Err(e) => state.branch_error = Some(e),
+                    }
+                }
+                Vec::new()
+            }
+            Action::BranchOpened { db, result } => self.on_branch_opened(db, result),
             Action::ProbeFinished {
                 name,
                 source,
@@ -542,6 +1023,8 @@ impl App {
                     name: name.to_string(),
                     env: env_name,
                     stage,
+                    pgrun_project: None,
+                    writes: false,
                 }));
                 let idx = self.dbs.len() - 1;
                 self.selected = idx;
@@ -579,6 +1062,11 @@ impl App {
     }
 
     fn handle_main_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        // The SQL editor owns nearly every key while it has the main pane, so
+        // it gets first refusal; it declines the ones the shell still needs.
+        if let Some(effects) = self.handle_sql_key(key) {
+            return effects;
+        }
         let contexts = self.key_contexts();
         let Some(action) = keymap::lookup(&contexts, &key) else {
             return Vec::new();
@@ -624,6 +1112,12 @@ impl App {
                     if self.selected > 0 {
                         self.select_db(self.selected - 1);
                     }
+                } else if self.on_branches_tab() {
+                    if let Some(db) = self.dbs.get_mut(self.selected) {
+                        db.branch_cursor = db.branch_cursor.saturating_sub(1);
+                    }
+                } else if self.on_tab(Tab::Data) {
+                    self.data_move(-1);
                 } else {
                     self.scroll_by(-1);
                 }
@@ -634,9 +1128,23 @@ impl App {
                     if self.selected + 1 < self.dbs.len() {
                         self.select_db(self.selected + 1);
                     }
+                } else if self.on_branches_tab() {
+                    if let Some(db) = self.dbs.get_mut(self.selected) {
+                        let last = db.branches.as_ref().map(|b| b.len()).unwrap_or(0);
+                        if db.branch_cursor + 1 < last {
+                            db.branch_cursor += 1;
+                        }
+                    }
+                } else if self.on_tab(Tab::Data) {
+                    self.data_move(1);
                 } else {
                     self.scroll_by(1);
                 }
+                Vec::new()
+            }
+            KeyAction::RunSql => self.run_sql(),
+            KeyAction::Back => {
+                self.data_back();
                 Vec::new()
             }
             KeyAction::Enter => {
@@ -644,6 +1152,10 @@ impl App {
                     // The sidebar picked a database; hand the keys to the body.
                     self.pane = Pane::Main;
                     Vec::new()
+                } else if self.on_branches_tab() {
+                    self.open_selected_branch()
+                } else if self.on_tab(Tab::Data) {
+                    self.data_enter()
                 } else {
                     // Overview: open the findings behind the summary.
                     if let Some(db) = self.dbs.get_mut(self.selected) {
@@ -1004,20 +1516,24 @@ impl App {
         }
     }
 
+    /// The interactive region under a point, if any.
+    fn hit_at(&self, col: u16, row: u16) -> Option<Hit> {
+        self.hitmap
+            .iter()
+            .find(|(r, _)| col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height)
+            .map(|(_, h)| h.clone())
+    }
+
     fn handle_mouse(&mut self, m: MouseEvent) -> Vec<Effect> {
+        // Motion only updates what looks clickable; it never acts.
+        if matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
+            self.hover = self.hit_at(m.column, m.row);
+            return Vec::new();
+        }
         if !matches!(m.kind, MouseEventKind::Down(_)) {
             return Vec::new();
         }
-        let hit = self
-            .hitmap
-            .iter()
-            .find(|(r, _)| {
-                m.column >= r.x
-                    && m.column < r.x + r.width
-                    && m.row >= r.y
-                    && m.row < r.y + r.height
-            })
-            .map(|(_, h)| h.clone());
+        let hit = self.hit_at(m.column, m.row);
         match hit {
             Some(Hit::SelectDb(i)) => {
                 self.select_db(i);
@@ -1030,6 +1546,24 @@ impl App {
             }
             Some(Hit::SetView(v)) if self.focus == Focus::Main => self.set_view(v),
             Some(Hit::SetTab(t)) if self.focus == Focus::Main => self.set_tab(t),
+            Some(Hit::SelectSchema(i)) if self.focus == Focus::Main => {
+                if let Some(db) = self.dbs.get_mut(self.selected) {
+                    db.data_schema_cursor = i;
+                }
+                self.data_enter()
+            }
+            Some(Hit::SelectTable(i)) if self.focus == Focus::Main => {
+                if let Some(db) = self.dbs.get_mut(self.selected) {
+                    db.data_table_cursor = i;
+                }
+                self.data_enter()
+            }
+            Some(Hit::SelectBranch(i)) if self.focus == Focus::Main => {
+                if let Some(db) = self.dbs.get_mut(self.selected) {
+                    db.branch_cursor = i;
+                }
+                self.open_selected_branch()
+            }
             Some(Hit::OpenPalette) if self.focus == Focus::Main => self.open_palette(),
             Some(Hit::PaletteItem(i)) if self.focus == Focus::Palette => {
                 if let Some(p) = self.palette.as_mut() {
@@ -1104,6 +1638,21 @@ impl App {
     /// identical in-flight job.
     pub fn refresh_selected(&mut self) -> Vec<Effect> {
         let selected = self.selected;
+        if self.on_tab(Tab::Data) {
+            if let Some(db) = self.dbs.get_mut(selected) {
+                db.data_schemas = None;
+                db.data_tables = None;
+                db.data_rows = None;
+                db.data_level = DataLevel::Schemas;
+            }
+            return self.load_schemas();
+        }
+        if self.dbs.get(selected).map(|d| d.tab) == Some(Tab::Branches) {
+            if let Some(db) = self.dbs.get_mut(selected) {
+                db.branches = None;
+            }
+            return self.refresh_branches();
+        }
         let Some(db) = self.dbs.get_mut(selected) else {
             return Vec::new();
         };
@@ -1193,6 +1742,72 @@ pub async fn run_effect(
 
 /// Performs one SpawnProbe effect for the add popup.
 #[allow(clippy::too_many_arguments)]
+/// One connection per database, opened on first use and kept for the session.
+/// pgbot-only databases never get one — this is opened by the SQL and Data
+/// tabs, and by nothing else.
+#[derive(Default)]
+pub struct Connections(std::collections::HashMap<usize, tokio_postgres::Client>);
+
+impl Connections {
+    /// The live connection for a database, opening or replacing it as needed.
+    pub async fn get(
+        &mut self,
+        db: usize,
+        source: &ConnSource,
+    ) -> Result<&mut tokio_postgres::Client, SafeError> {
+        // A closed connection is indistinguishable from a working one until
+        // it is used, so drop it and reconnect rather than fail the query.
+        if self.0.get(&db).map(|c| c.is_closed()).unwrap_or(false) {
+            self.0.remove(&db);
+        }
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.0.entry(db) {
+            slot.insert(crate::db::connect(source).await?);
+        }
+        Ok(self.0.get_mut(&db).expect("present or just inserted"))
+    }
+
+    pub fn drop_db(&mut self, db: usize) {
+        self.0.remove(&db);
+    }
+}
+
+/// Run one SQL effect and turn the answer back into an Action.
+pub async fn run_sql_effect(
+    conns: Arc<tokio::sync::Mutex<Connections>>,
+    db: usize,
+    source: ConnSource,
+    target: SqlTarget,
+    sql: String,
+    policy: WritePolicy,
+) -> Action {
+    let mut guard = conns.lock().await;
+    let result = match guard.get(db, &source).await {
+        Ok(client) => crate::db::run_sql(client, &sql, policy).await.map(Box::new),
+        Err(e) => Err(e),
+    };
+    // A broken connection should not poison the next attempt.
+    if matches!(
+        result.as_ref().err().map(|e| e.kind),
+        Some(crate::sanitize::ErrorKind::ConnectionFailed | crate::sanitize::ErrorKind::Timeout)
+    ) {
+        guard.drop_db(db);
+    }
+    Action::SqlFinished { db, target, result }
+}
+
+/// Perform one pgrun call and turn it back into an Action.
+pub async fn run_pgrun_effect(bin: PathBuf, db: usize, cmd: PgrunCommand, open: bool) -> Action {
+    let timeout = pgrun::default_timeout(&cmd);
+    let out = pgrun::run_pgrun(&bin, &cmd, timeout).await;
+    if open {
+        let result = out.and_then(|o| pgrun::decode_branch(&o.stdout).map(Box::new));
+        Action::BranchOpened { db, result }
+    } else {
+        let result = out.and_then(|o| pgrun::decode_list(&o.stdout));
+        Action::BranchesFinished { db, result }
+    }
+}
+
 pub async fn run_probe(
     pgbot_bin: PathBuf,
     name: String,
@@ -2173,5 +2788,43 @@ mod tests {
         std::env::remove_var("STAGE_TEST_URL");
         std::env::remove_var("PGTERM_CONFIG");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn motion_marks_what_is_clickable_without_acting() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut a = app(2);
+        // The draw pass owns the hitmap; fake one region for the test.
+        a.hitmap = vec![
+            (Rect::new(0, 0, 10, 1), Hit::SelectDb(1)),
+            (Rect::new(0, 1, 10, 1), Hit::OpenAdd),
+        ];
+        let moved = |col, row| {
+            Action::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: col,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert!(a.hover.is_none());
+        let effects = a.update(moved(3, 0));
+        assert_eq!(a.hover, Some(Hit::SelectDb(1)));
+        assert!(effects.is_empty(), "hovering must never act");
+        assert_eq!(a.selected, 0, "and must not select");
+        a.update(moved(3, 1));
+        assert_eq!(a.hover, Some(Hit::OpenAdd));
+        assert!(a.popup.is_none(), "hovering the add row opens nothing");
+        a.update(moved(50, 9));
+        assert!(a.hover.is_none(), "off every region clears the hover");
+
+        // A real click still acts.
+        a.update(Action::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(a.selected, 1);
     }
 }

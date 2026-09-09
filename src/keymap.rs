@@ -16,6 +16,9 @@ pub enum KeyContext {
     Sidebar,
     PgBot,
     Overview,
+    Sql,
+    Data,
+    Branches,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +38,8 @@ pub enum KeyAction {
     Up,
     Down,
     Enter,
+    Back,
+    RunSql,
 }
 
 pub struct Binding {
@@ -87,6 +92,24 @@ pub static KEYMAP: &[Binding] = &[
         "pgbot tab",
     ),
     b(
+        &["3"],
+        KeyContext::Main,
+        KeyAction::SetTab(Tab::Sql),
+        "sql tab",
+    ),
+    b(
+        &["4"],
+        KeyContext::Main,
+        KeyAction::SetTab(Tab::Data),
+        "data tab",
+    ),
+    b(
+        &["5"],
+        KeyContext::Main,
+        KeyAction::SetTab(Tab::Branches),
+        "branches tab",
+    ),
+    b(
         &["C-k", ":"],
         KeyContext::Main,
         KeyAction::Palette,
@@ -136,6 +159,30 @@ pub static KEYMAP: &[Binding] = &[
         KeyAction::Enter,
         "open pgbot findings",
     ),
+    b(
+        &["Enter"],
+        KeyContext::Branches,
+        KeyAction::Enter,
+        "open the branch as a tab",
+    ),
+    b(
+        &["Enter"],
+        KeyContext::Data,
+        KeyAction::Enter,
+        "open the schema, table, or rows",
+    ),
+    b(
+        &["Esc"],
+        KeyContext::Data,
+        KeyAction::Back,
+        "back up one level",
+    ),
+    b(
+        &["F5"],
+        KeyContext::Sql,
+        KeyAction::RunSql,
+        "run the query (Ctrl-Enter too)",
+    ),
 ];
 
 /// The canonical name of a key event, in the spelling KEYMAP uses.
@@ -154,6 +201,7 @@ pub fn key_name(key: &KeyEvent) -> Option<String> {
         KeyCode::PageUp => "PgUp".to_string(),
         KeyCode::PageDown => "PgDn".to_string(),
         KeyCode::Backspace => "Backspace".to_string(),
+        KeyCode::F(n) => format!("F{n}"),
         _ => return None,
     };
     if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -188,6 +236,9 @@ pub fn help_text() -> String {
         (KeyContext::Sidebar, "SIDEBAR"),
         (KeyContext::Overview, "OVERVIEW"),
         (KeyContext::PgBot, "PGBOT TAB"),
+        (KeyContext::Sql, "SQL TAB"),
+        (KeyContext::Data, "DATA TAB"),
+        (KeyContext::Branches, "BRANCHES TAB"),
         (KeyContext::Global, "GENERAL"),
     ];
     let mut out = String::from("pgterm\n");
