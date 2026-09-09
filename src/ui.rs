@@ -302,7 +302,7 @@ fn draw_popup(
 ) -> Vec<(Rect, Hit)> {
     let mut button_hits: Vec<(Rect, Hit)> = Vec::new();
     use crate::app::PopupField;
-    let [v] = Layout::vertical([Constraint::Length(14)])
+    let [v] = Layout::vertical([Constraint::Length(17)])
         .flex(Flex::Center)
         .areas(area);
     let [rect] = Layout::horizontal([Constraint::Length(56)])
@@ -346,6 +346,18 @@ fn draw_popup(
     let mut lines = vec![
         Line::from(Span::styled("Name", dim)),
         field_line(PopupField::Name, popup.name.clone(), "production"),
+        Line::from(""),
+        Line::from(Span::styled("Stage", dim)),
+        Line::from(vec![
+            Span::styled(
+                popup
+                    .stage
+                    .map(|s| s.label().to_string())
+                    .unwrap_or_else(|| "auto".into()),
+                field_style(PopupField::Stage),
+            ),
+            Span::styled("   ←/→  auto · prod · staging · dev · local", dim),
+        ]),
         Line::from(""),
         Line::from(Span::styled("Connection", dim)),
         field_line(
@@ -415,9 +427,9 @@ fn draw_popup(
         rect,
     );
     if show_buttons {
-        // The action row is the 9th content line inside the border; the
+        // The action row is the 12th content line inside the border; the
         // popup has a fixed layout so the offsets are stable.
-        let y = rect.y + 9;
+        let y = rect.y + 12;
         button_hits.push((Rect::new(rect.x + 1, y, 8, 1), Hit::PopupTest));
         button_hits.push((Rect::new(rect.x + 34, y, 7, 1), Hit::PopupAdd));
     }

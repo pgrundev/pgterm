@@ -88,6 +88,8 @@ pub enum Action {
         name: String,
         source: ConnSource,
         save: bool,
+        /// The environment badge chosen in the popup; None = infer it.
+        stage: Option<crate::config::Stage>,
         /// For a pasted NAME='URL' assignment: the variable NAME to persist
         /// in config while the URL itself stays session-only in memory.
         persist_env: Option<String>,
@@ -110,6 +112,7 @@ pub enum Effect {
         name: String,
         source: ConnSource,
         save: bool,
+        stage: Option<crate::config::Stage>,
         persist_env: Option<String>,
     },
 }

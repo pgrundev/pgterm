@@ -13,7 +13,7 @@ use ratatui::layout::Rect;
 use tokio::sync::Semaphore;
 
 use crate::action::{Action, CmdKind, Effect, Hit, Pane, StoredResult, Tab, View};
-use crate::config::{DatabaseProfile, TerminalConfig, UiSettings};
+use crate::config::{DatabaseProfile, Stage, TerminalConfig, UiSettings};
 use crate::health::{self, HealthStatus};
 use crate::keymap::{self, KeyAction, KeyContext};
 use crate::model::{Context, IndexesReport, WhyReport};
@@ -43,6 +43,7 @@ pub const TOAST_SECONDS: u64 = 5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PopupField {
     Name,
+    Stage,
     Env,
 }
 
@@ -51,6 +52,8 @@ pub enum PopupField {
 #[derive(Debug, Clone)]
 pub struct AddPopup {
     pub name: String,
+    /// The chosen badge; None means "infer it from the name".
+    pub stage: Option<Stage>,
     pub env: String,
     pub field: PopupField,
     pub busy: bool,
@@ -62,6 +65,7 @@ impl Default for AddPopup {
     fn default() -> Self {
         AddPopup {
             name: String::new(),
+            stage: None,
             env: String::new(),
             field: PopupField::Name,
             busy: false,
@@ -322,9 +326,10 @@ impl App {
                 name,
                 source,
                 save,
+                stage,
                 persist_env,
                 result,
-            } => self.on_probe_finished(&name, source, save, persist_env, result),
+            } => self.on_probe_finished(&name, source, save, stage, persist_env, result),
             Action::Paste(text) => {
                 self.handle_paste(&text);
                 Vec::new()
@@ -439,6 +444,7 @@ impl App {
         name: &str,
         source: ConnSource,
         save: bool,
+        stage: Option<Stage>,
         persist_env: Option<String>,
         result: Result<StoredResult, SafeError>,
     ) -> Vec<Effect> {
@@ -473,7 +479,10 @@ impl App {
                                 return Vec::new();
                             }
                         };
-                        if let Err(e) = cfg.add(name, env_name).and_then(|()| cfg.save()) {
+                        if let Err(e) = cfg
+                            .add_with_stage(name, env_name, stage)
+                            .and_then(|()| cfg.save())
+                        {
                             popup.message = Some(Err(SafeError::new(
                                 crate::sanitize::ErrorKind::BadOutput,
                                 &format!("{e:#}"),
@@ -485,6 +494,7 @@ impl App {
                     self.popup = None;
                     self.focus = Focus::Main;
                     let mut db = DbState::session(name, url);
+                    db.profile.stage = stage;
                     if let Some(env_name) = persist_env {
                         db.profile.env = env_name;
                     }
@@ -515,7 +525,10 @@ impl App {
                     ConnSource::Env(n) => n.clone(),
                     ConnSource::Session(_) => unreachable!("handled above"),
                 };
-                if let Err(e) = cfg.add(name, &env_name).and_then(|()| cfg.save()) {
+                if let Err(e) = cfg
+                    .add_with_stage(name, &env_name, stage)
+                    .and_then(|()| cfg.save())
+                {
                     popup.message = Some(Err(SafeError::new(
                         crate::sanitize::ErrorKind::BadOutput,
                         &format!("{e:#}"),
@@ -528,7 +541,7 @@ impl App {
                 self.dbs.push(DbState::new(DatabaseProfile {
                     name: name.to_string(),
                     env: env_name,
-                    stage: None,
+                    stage,
                 }));
                 let idx = self.dbs.len() - 1;
                 self.selected = idx;
@@ -843,17 +856,43 @@ impl App {
                 self.focus = Focus::Main;
                 Vec::new()
             }
-            KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
+            KeyCode::Tab | KeyCode::Down => {
                 popup.field = match popup.field {
-                    PopupField::Name => PopupField::Env,
+                    PopupField::Name => PopupField::Stage,
+                    PopupField::Stage => PopupField::Env,
                     PopupField::Env => PopupField::Name,
                 };
+                Vec::new()
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                popup.field = match popup.field {
+                    PopupField::Name => PopupField::Env,
+                    PopupField::Stage => PopupField::Name,
+                    PopupField::Env => PopupField::Stage,
+                };
+                Vec::new()
+            }
+            // The Stage field is a cycle, not a text box.
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                if popup.field == PopupField::Stage =>
+            {
+                const ORDER: [Option<Stage>; 5] = [
+                    None,
+                    Some(Stage::Prod),
+                    Some(Stage::Staging),
+                    Some(Stage::Dev),
+                    Some(Stage::Local),
+                ];
+                let i = ORDER.iter().position(|s| *s == popup.stage).unwrap_or(0) as i64;
+                let step = if key.code == KeyCode::Left { -1 } else { 1 };
+                popup.stage = ORDER[(i + step).rem_euclid(ORDER.len() as i64) as usize];
                 Vec::new()
             }
             KeyCode::Backspace => {
                 match popup.field {
                     PopupField::Name => popup.name.pop(),
                     PopupField::Env => popup.env.pop(),
+                    PopupField::Stage => None,
                 };
                 Vec::new()
             }
@@ -865,6 +904,7 @@ impl App {
                 match popup.field {
                     PopupField::Name => popup.name.push(c),
                     PopupField::Env => popup.env.push(c),
+                    PopupField::Stage => {}
                 }
                 Vec::new()
             }
@@ -883,6 +923,7 @@ impl App {
         }
         let name = popup.name.trim().to_string();
         let conn = popup.env.trim().to_string();
+        let stage = popup.stage;
 
         // A pasted URL becomes a session-only source: validated name, no
         // config involvement, secret stays in memory. The NAME='URL' shape
@@ -906,6 +947,7 @@ impl App {
                 name,
                 source: ConnSource::Session(url),
                 save,
+                stage,
                 persist_env,
             }];
         }
@@ -938,6 +980,7 @@ impl App {
             name,
             source,
             save,
+            stage,
             persist_env: None,
         }]
     }
@@ -953,6 +996,7 @@ impl App {
                     match popup.field {
                         PopupField::Name => popup.name.push_str(clean.trim()),
                         PopupField::Env => popup.env.push_str(clean.trim()),
+                        PopupField::Stage => {}
                     }
                 }
             }
@@ -1148,11 +1192,13 @@ pub async fn run_effect(
 }
 
 /// Performs one SpawnProbe effect for the add popup.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_probe(
     pgbot_bin: PathBuf,
     name: String,
     source: ConnSource,
     save: bool,
+    stage: Option<Stage>,
     persist_env: Option<String>,
     sem: Arc<Semaphore>,
 ) -> Action {
@@ -1165,6 +1211,7 @@ pub async fn run_probe(
         name,
         source,
         save,
+        stage,
         persist_env,
         result,
     }
@@ -1429,6 +1476,8 @@ mod tests {
         for c in "prod".chars() {
             a.update(key(KeyCode::Char(c)));
         }
+        // Name → Stage → Connection.
+        a.update(key(KeyCode::Tab));
         a.update(key(KeyCode::Tab));
         for c in "P_URL".chars() {
             a.update(key(KeyCode::Char(c)));
@@ -1557,6 +1606,7 @@ mod tests {
             name: "staging".into(),
             source: ConnSource::Env("POPUP_ADD_URL".into()),
             save: true,
+            stage: None,
             persist_env: None,
             result: ok_ctx(HEALTHY),
         });
@@ -1593,6 +1643,7 @@ mod tests {
             name: "x".into(),
             source: ConnSource::Env("Y".into()),
             save: false,
+            stage: None,
             persist_env: None,
             result: ok_ctx(HEALTHY),
         });
@@ -1613,6 +1664,7 @@ mod tests {
             name: "x".into(),
             source: ConnSource::Env("Y".into()),
             save: true,
+            stage: None,
             persist_env: None,
             result: Err(SafeError::new(
                 crate::sanitize::ErrorKind::ConnectionFailed,
@@ -1733,6 +1785,7 @@ mod tests {
             name: "pasted".into(),
             source: ConnSource::Session("postgres://alex:hunter2@db/app".into()),
             save: true,
+            stage: None,
             persist_env: None,
             result: ok_ctx(HEALTHY),
         });
@@ -1791,6 +1844,7 @@ mod tests {
         a.update(key(KeyCode::Esc));
         // Popup env field
         a.update(key(KeyCode::Char('a')));
+        a.update(key(KeyCode::Tab));
         a.update(key(KeyCode::Tab));
         a.update(Action::Paste("postgres://u:pw@h/db\n".into()));
         assert_eq!(a.popup.as_ref().unwrap().env, "postgres://u:pw@h/db");
@@ -1856,6 +1910,7 @@ mod tests {
             name: "staging".into(),
             source: ConnSource::Session("postgres://alex:hunter2@db/app".into()),
             save: true,
+            stage: None,
             persist_env: Some("STAGING_DATABASE_URL".into()),
             result: ok_ctx(HEALTHY),
         });
@@ -2058,5 +2113,65 @@ mod tests {
             "unknown input stays open with an error"
         );
         assert!(a.cmd_error.is_some());
+    }
+
+    #[test]
+    fn popup_stage_field_cycles_and_is_saved() {
+        let _g = popup_env_guard();
+        std::env::set_var("STAGE_TEST_URL", "postgres://x@mode-healthy.local/db");
+        let dir = std::env::temp_dir().join(format!("pgterm-stage-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::env::set_var("PGTERM_CONFIG", dir.join("config.toml"));
+
+        let mut a = app(0);
+        a.update(key(KeyCode::Char('a')));
+        for c in "warehouse".chars() {
+            a.update(key(KeyCode::Char(c)));
+        }
+        a.update(key(KeyCode::Tab));
+        assert_eq!(a.popup.as_ref().unwrap().field, PopupField::Stage);
+        a.update(key(KeyCode::Right));
+        assert_eq!(a.popup.as_ref().unwrap().stage, Some(Stage::Prod));
+        a.update(key(KeyCode::Right));
+        assert_eq!(a.popup.as_ref().unwrap().stage, Some(Stage::Staging));
+        a.update(key(KeyCode::Left));
+        a.update(key(KeyCode::Left));
+        assert_eq!(a.popup.as_ref().unwrap().stage, None, "wraps back to auto");
+        a.update(key(KeyCode::Char(' ')));
+        assert_eq!(a.popup.as_ref().unwrap().stage, Some(Stage::Prod));
+        // Typing into a cycle field must not become text.
+        a.update(key(KeyCode::Char('x')));
+        assert_eq!(a.popup.as_ref().unwrap().stage, Some(Stage::Prod));
+
+        a.update(key(KeyCode::Tab));
+        assert_eq!(a.popup.as_ref().unwrap().field, PopupField::Env);
+        for c in "STAGE_TEST_URL".chars() {
+            a.update(key(KeyCode::Char(c)));
+        }
+        let effects = a.update(key(KeyCode::Enter));
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::SpawnProbe {
+                    stage: Some(Stage::Prod),
+                    ..
+                }]
+            ),
+            "{effects:?}"
+        );
+        a.update(Action::ProbeFinished {
+            name: "warehouse".into(),
+            source: ConnSource::Env("STAGE_TEST_URL".into()),
+            save: true,
+            stage: Some(Stage::Prod),
+            persist_env: None,
+            result: ok_ctx(HEALTHY),
+        });
+        assert_eq!(a.dbs[0].profile.stage, Some(Stage::Prod));
+        assert_eq!(a.dbs[0].profile.badge(), Some(Stage::Prod));
+
+        std::env::remove_var("STAGE_TEST_URL");
+        std::env::remove_var("PGTERM_CONFIG");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

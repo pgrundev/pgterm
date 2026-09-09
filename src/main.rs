@@ -162,14 +162,16 @@ fn perform(
                 name,
                 source,
                 save,
+                stage,
                 persist_env,
             } => {
                 let bin = app.pgbot_bin.clone();
                 let tx = tx.clone();
                 let sem = sem.clone();
                 tokio::spawn(async move {
-                    let _ =
-                        tx.send(app::run_probe(bin, name, source, save, persist_env, sem).await);
+                    let _ = tx.send(
+                        app::run_probe(bin, name, source, save, stage, persist_env, sem).await,
+                    );
                 });
             }
         }
