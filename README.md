@@ -181,7 +181,9 @@ Tab / S-Tab        focus sidebar / main pane
 ]                  next database
 1                  overview tab
 2                  pgbot tab
-3                  branches tab
+3                  sql tab
+4                  data tab
+5                  branches tab
 C-k / :            command palette
 /                  command bar (verbs, ask …)
 a                  add database
@@ -194,6 +196,13 @@ Enter              open the selected database
 
 OVERVIEW
 Enter              open pgbot findings
+
+SQL TAB
+F5                 run the query (Ctrl-Enter too)
+
+DATA TAB
+Enter              open the schema, table, or rows
+Esc                back up one level
 
 BRANCHES TAB
 Enter              open the branch as a tab
@@ -215,7 +224,7 @@ against it too.
 
 - `Tab` / `Shift+Tab` now move between the sidebar and the main pane. `[` and
   `]` switch databases.
-- Number keys pick tabs (`1` Overview, `2` PgBot, `3` Branches). Inside PgBot, `←`/`→` or
+- Number keys pick tabs (`1` Overview, `2` PgBot, `3` SQL, `4` Data, `5` Branches). Inside PgBot, `←`/`→` or
   `h`/`l` step through Inspect · Queries · Indexes · Tables · Why.
 - `Ctrl-K` (or `:`) opens the command palette. `/` is still the command bar.
 
@@ -234,6 +243,34 @@ from the same JSON by the same rules so the two never disagree:
 Under them, the findings that need attention with pgbot's own confidence, then
 a `✓` line per subsystem that came back clean. Press `Enter` (or `2`) for the
 full report.
+
+## SQL and Data
+
+The SQL tab runs a query against the database and shows the rows. The Data
+tab browses schemas, then tables with size and row estimates, then a page of
+rows.
+
+Both use pgterm's own connection, and both are fenced:
+
+- **Every statement runs in a transaction that is `READ ONLY`** unless the
+  profile opts in with `writes = true`. The server refuses the write, not a
+  keyword check of ours, so there is nothing to trick.
+- On a **PROD**-badged database with writes enabled, a statement that looks
+  like a write asks you to type the database name first.
+- `statement_timeout` is 30s and rows are capped, so a stray `SELECT *`
+  cannot hang the UI or pull a billion rows into it.
+- The Data browser is read-only whatever the profile allows. Browsing is
+  never a way to change something.
+
+```toml
+[[databases]]
+name = "staging"
+env = "STAGING_DATABASE_URL"
+writes = true    # lift READ ONLY for this database only
+```
+
+TLS follows the connection string's own `sslmode`; pgterm never weakens it.
+Nothing you type is written to disk.
 
 ## Branches
 

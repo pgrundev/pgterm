@@ -314,6 +314,13 @@ fn cell_to_string(row: &Row, i: usize) -> String {
             .ok()
             .flatten()
             .map(|v| v.to_string()),
+        // relkind and friends: Postgres' internal one-byte "char", which is
+        // an i8 on the wire and would otherwise read as NULL.
+        Type::CHAR => row
+            .try_get::<_, Option<i8>>(i)
+            .ok()
+            .flatten()
+            .map(|v| (v as u8 as char).to_string()),
         Type::INT2 => row
             .try_get::<_, Option<i16>>(i)
             .ok()
@@ -375,8 +382,21 @@ fn truncate_cell(v: &str) -> String {
     }
 }
 
-/// The Data browser's queries. Written here rather than composed in the UI so
-/// every identifier is parameterised, never interpolated.
+/// The Data browser's queries. The schema and table names come from the
+/// catalog, not from typing, but they still reach SQL as text — so they are
+/// quoted here by the same rules Postgres uses, with tests, rather than
+/// interpolated raw.
+/// A SQL string literal: single quotes doubled, wrapped in single quotes.
+pub fn quote_literal(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// A SQL identifier: double quotes doubled, wrapped in double quotes. Always
+/// quoted, so a name that is a keyword or has capitals still works.
+pub fn quote_ident(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
 pub const SCHEMAS_SQL: &str = "\
 SELECT n.nspname AS schema,
        count(c.oid) FILTER (WHERE c.relkind IN ('r','p')) AS tables
@@ -386,19 +406,34 @@ SELECT n.nspname AS schema,
  GROUP BY n.nspname
  ORDER BY n.nspname";
 
-pub const TABLES_SQL: &str = "\
-SELECT c.relname AS table,
-       c.reltuples::bigint AS est_rows,
-       pg_total_relation_size(c.oid) AS bytes
-  FROM pg_class c
-  JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE n.nspname = $1 AND c.relkind IN ('r','p')
- ORDER BY pg_total_relation_size(c.oid) DESC";
+/// The tables of one schema, largest first.
+pub fn tables_sql(schema: &str) -> String {
+    format!(
+        "SELECT c.relname AS table,
+                CASE WHEN c.reltuples < 0 THEN '?'
+                     ELSE c.reltuples::bigint::text END AS est_rows,
+                pg_size_pretty(pg_total_relation_size(c.oid)) AS size
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = {} AND c.relkind IN ('r','p')
+          ORDER BY pg_total_relation_size(c.oid) DESC",
+        quote_literal(schema)
+    )
+}
 
-/// Page one table. The identifier is quoted by the server via format(%I), so
-/// a hostile table name cannot break out.
-pub const ROWS_SQL: &str = "\
-SELECT format('SELECT * FROM %I.%I LIMIT $1 OFFSET $2', $2::text, $3::text)";
+/// One page of a table's rows. Capped at the server as well as in the reader.
+pub fn rows_sql(schema: &str, table: &str, offset: usize) -> String {
+    format!(
+        "SELECT * FROM {}.{} LIMIT {} OFFSET {}",
+        quote_ident(schema),
+        quote_ident(table),
+        PAGE_ROWS,
+        offset
+    )
+}
+
+/// Rows the Data browser pulls per page.
+pub const PAGE_ROWS: usize = 100;
 
 #[cfg(test)]
 mod tests {
@@ -441,6 +476,29 @@ mod tests {
         assert_eq!(out.chars().count(), CELL_CAP);
         assert!(out.ends_with('…'));
         assert_eq!(truncate_cell("short"), "short");
+    }
+
+    #[test]
+    fn quoting_follows_postgres_rules_and_survives_hostile_names() {
+        assert_eq!(quote_literal("public"), "'public'");
+        assert_eq!(quote_literal("it's"), "'it''s'");
+        assert_eq!(
+            quote_literal("'; DROP TABLE users --"),
+            "'''; DROP TABLE users --'"
+        );
+        assert_eq!(quote_ident("orders"), "\"orders\"");
+        assert_eq!(quote_ident("Odd Name"), "\"Odd Name\"");
+        assert_eq!(quote_ident("we\"ird"), "\"we\"\"ird\"");
+
+        // A hostile name cannot break out of either position.
+        let sql = tables_sql("'; DROP TABLE users --");
+        assert!(sql.contains("'''; DROP TABLE users --'"), "{sql}");
+        let sql = rows_sql("pu\"blic", "or\"ders", 200);
+        assert!(sql.contains("\"pu\"\"blic\".\"or\"\"ders\""), "{sql}");
+        assert!(
+            sql.contains("OFFSET 200") && sql.contains("LIMIT 100"),
+            "{sql}"
+        );
     }
 
     #[test]
@@ -517,6 +575,27 @@ mod tests {
                     !row[0].starts_with("pg_") && row[0] != "information_schema",
                     "system schema leaked into the browser: {row:?}"
                 );
+            }
+
+            let r = run_sql(
+                &mut c,
+                "SELECT relkind FROM pg_class LIMIT 1",
+                WritePolicy::ReadOnly,
+            )
+            .await
+            .expect("relkind");
+            println!("relkind: {:?} ({:?})", r.rows[0], r.types);
+            assert_ne!(
+                r.rows[0][0], "NULL",
+                "Postgres' internal char type must render, not read as NULL"
+            );
+
+            let r = run_sql(&mut c, &tables_sql("public"), WritePolicy::ReadOnly)
+                .await
+                .expect("tables");
+            println!("tables (2): {:?}", &r.rows[..r.rows.len().min(2)]);
+            for row in &r.rows {
+                assert_ne!(row[1], "-1", "never-analyzed must read as ?, not -1 rows");
             }
 
             let bad = run_sql(

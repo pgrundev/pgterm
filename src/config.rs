@@ -124,6 +124,7 @@ bell = false
 # env = \"PROD_DATABASE_URL\"   # the variable holding the connection string
 # stage = \"prod\"              # prod | staging | dev | local \u{2014} badge; inferred from the name when absent
 # pgrun_project = \"acme-api\"  # show this pgrun project's branches for the database
+# writes = false               # true lets the SQL tab write (a PROD badge still asks first)
 ";
 
 /// One monitored database: a friendly name and the environment variable that
@@ -140,12 +141,31 @@ pub struct DatabaseProfile {
     /// the Branches section explains how to set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pgrun_project: Option<String>,
+    /// May the SQL tab write? Off by default: every statement runs in a
+    /// READ ONLY transaction until this is set.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub writes: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl DatabaseProfile {
     /// The badge to show: the configured stage, else one inferred from the name.
     pub fn badge(&self) -> Option<Stage> {
         self.stage.or_else(|| Stage::infer(&self.name))
+    }
+
+    /// Read-only unless the profile opted in; a prod badge additionally asks
+    /// before each write.
+    pub fn write_policy(&self) -> crate::db::WritePolicy {
+        use crate::db::WritePolicy;
+        match (self.writes, self.badge()) {
+            (false, _) => WritePolicy::ReadOnly,
+            (true, Some(Stage::Prod)) => WritePolicy::ConfirmWrites,
+            (true, _) => WritePolicy::Writes,
+        }
     }
 }
 
@@ -262,6 +282,7 @@ impl TerminalConfig {
             env: env.to_string(),
             stage,
             pgrun_project: None,
+            writes: false,
         });
         Ok(())
     }
@@ -504,6 +525,7 @@ env = "STAGING_DATABASE_URL"
             env: "X".into(),
             stage: Some(Stage::Dev),
             pgrun_project: None,
+            writes: false,
         };
         assert_eq!(p.badge(), Some(Stage::Dev), "explicit stage beats the name");
         let p = DatabaseProfile {
@@ -511,6 +533,7 @@ env = "STAGING_DATABASE_URL"
             env: "X".into(),
             stage: None,
             pgrun_project: None,
+            writes: false,
         };
         assert_eq!(p.badge(), Some(Stage::Prod));
     }

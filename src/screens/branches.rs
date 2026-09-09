@@ -165,6 +165,7 @@ mod tests {
             env: "P_URL".into(),
             stage: None,
             pgrun_project: project.map(String::from),
+            writes: false,
         });
         db.branches = branches;
         db

@@ -11,7 +11,7 @@ use ratatui::Frame;
 use crate::action::{Hit, Tab};
 use crate::app::{App, DbState, Focus};
 use crate::health::HealthStatus;
-use crate::screens::{self, branches, overview, sidebar, states, tabs};
+use crate::screens::{self, branches, data, overview, sidebar, sql, states, tabs};
 
 /// What the pointer is over gets underlined: the standard "this is clickable"
 /// affordance, and it survives a monochrome terminal.
@@ -108,6 +108,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(tab_body);
                 hits.extend(tabs::draw_subtabs(f, sub, db, app.hover.as_ref()));
                 screens::draw_body(f, rest, db);
+            }
+            Tab::Sql => sql::draw(f, tab_body, db),
+            Tab::Data => {
+                hits.extend(data::draw(f, tab_body, db, app.hover.as_ref()));
             }
             Tab::Branches => {
                 hits.extend(branches::draw(f, tab_body, db, app.hover.as_ref()));
@@ -957,5 +961,77 @@ mod tests {
         ));
         app.update(action);
         println!("{}", render(&mut app, 120, 32));
+    }
+
+    /// The SQL and Data tabs against a real database:
+    /// `PGTERM_TEST_DATABASE_URL=postgres://... cargo test --lib show_sql -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn show_sql_and_data() {
+        let Ok(url) = std::env::var("PGTERM_TEST_DATABASE_URL") else {
+            println!("set PGTERM_TEST_DATABASE_URL to try this");
+            return;
+        };
+        let mut app = app_with(&["production"]);
+        app.dbs[0].source = crate::runner::ConnSource::Session(url);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let conns =
+            std::sync::Arc::new(tokio::sync::Mutex::new(crate::app::Connections::default()));
+
+        // SQL tab.
+        app.set_tab(crate::action::Tab::Sql);
+        app.dbs[0].sql = crate::editor::Editor::from_text(
+            "SELECT relname AS table, relkind AS kind, reltuples::bigint AS rows\n  FROM pg_class LIMIT 5",
+        );
+        let effects = app.run_sql();
+        for e in effects {
+            if let crate::action::Effect::SpawnSql {
+                db,
+                target,
+                sql,
+                policy,
+            } = e
+            {
+                let source = app.dbs[db].source.clone();
+                let action = rt.block_on(crate::app::run_sql_effect(
+                    conns.clone(),
+                    db,
+                    source,
+                    target,
+                    sql,
+                    policy,
+                ));
+                app.update(action);
+            }
+        }
+        println!("{}", render(&mut app, 120, 30));
+
+        // Data tab: schemas, then into one.
+        let effects = app.set_tab(crate::action::Tab::Data);
+        let mut queue = effects;
+        for _ in 0..2 {
+            for e in std::mem::take(&mut queue) {
+                if let crate::action::Effect::SpawnSql {
+                    db,
+                    target,
+                    sql,
+                    policy,
+                } = e
+                {
+                    let source = app.dbs[db].source.clone();
+                    let action = rt.block_on(crate::app::run_sql_effect(
+                        conns.clone(),
+                        db,
+                        source,
+                        target,
+                        sql,
+                        policy,
+                    ));
+                    app.update(action);
+                }
+            }
+            println!("{}", render(&mut app, 120, 24));
+            queue = app.data_enter();
+        }
     }
 }
