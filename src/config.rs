@@ -29,6 +29,102 @@ impl Default for Settings {
     }
 }
 
+/// Which environment a database belongs to. Drives the sidebar badge and,
+/// in later slices, the extra confirmation before writes on PROD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Stage {
+    Prod,
+    Staging,
+    Dev,
+    Local,
+}
+
+impl Stage {
+    pub const ALL: [Stage; 4] = [Stage::Prod, Stage::Staging, Stage::Dev, Stage::Local];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Stage::Prod => "PROD",
+            Stage::Staging => "STAGING",
+            Stage::Dev => "DEV",
+            Stage::Local => "LOCAL",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Stage> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "prod" => Some(Stage::Prod),
+            "staging" => Some(Stage::Staging),
+            "dev" => Some(Stage::Dev),
+            "local" => Some(Stage::Local),
+            _ => None,
+        }
+    }
+
+    /// Best guess from a name, in a fixed order so "prod" beats "dev" in
+    /// "dev-prod-mirror". An explicit `stage =` in config always wins.
+    pub fn infer(name: &str) -> Option<Stage> {
+        let n = name.to_ascii_lowercase();
+        if n.contains("prod") {
+            Some(Stage::Prod)
+        } else if n.contains("stag") {
+            Some(Stage::Staging)
+        } else if n.contains("local") {
+            Some(Stage::Local)
+        } else if n.contains("dev") {
+            Some(Stage::Dev)
+        } else {
+            None
+        }
+    }
+}
+
+/// Presentation switches. Nothing here changes what pgterm does to a database.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UiSettings {
+    /// Two rows per database in the sidebar: the second is a dim detail line.
+    pub sidebar_detail: bool,
+    /// Ring the terminal bell with a toast when an unselected database turns
+    /// critical or unavailable.
+    pub bell: bool,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        UiSettings {
+            sidebar_detail: true,
+            bell: false,
+        }
+    }
+}
+
+/// The annotated defaults, printed by `pgterm --default-config`.
+pub const DEFAULT_CONFIG_TEXT: &str = "\
+# pgterm configuration \u{2014} ~/.config/pgterm/config.toml
+# Stores environment-variable NAMES, never connection strings.
+version = 1
+
+[settings]
+# Seconds between background health checks of every database.
+interval_seconds = 60
+# How many pgbot checks may run at once.
+max_concurrent_checks = 3
+
+[ui]
+# Two rows per database in the sidebar (the second is a dim detail line).
+sidebar_detail = true
+# Terminal bell when a database you are not looking at turns critical.
+bell = false
+
+# One block per database:
+# [[databases]]
+# name = \"production\"
+# env = \"PROD_DATABASE_URL\"   # the variable holding the connection string
+# stage = \"prod\"              # prod | staging | dev | local \u{2014} badge; inferred from the name when absent
+";
+
 /// One monitored database: a friendly name and the environment variable that
 /// holds its connection string. The variable's VALUE is resolved in memory at
 /// spawn time and never persisted.
@@ -36,6 +132,16 @@ impl Default for Settings {
 pub struct DatabaseProfile {
     pub name: String,
     pub env: String,
+    /// The environment badge. Absent means "infer it from the name".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<Stage>,
+}
+
+impl DatabaseProfile {
+    /// The badge to show: the configured stage, else one inferred from the name.
+    pub fn badge(&self) -> Option<Stage> {
+        self.stage.or_else(|| Stage::infer(&self.name))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,6 +149,7 @@ pub struct DatabaseProfile {
 pub struct TerminalConfig {
     pub version: u32,
     pub settings: Settings,
+    pub ui: UiSettings,
     #[serde(rename = "databases")]
     pub databases: Vec<DatabaseProfile>,
 }
@@ -52,6 +159,7 @@ impl Default for TerminalConfig {
         TerminalConfig {
             version: 1,
             settings: Settings::default(),
+            ui: UiSettings::default(),
             databases: Vec::new(),
         }
     }
@@ -117,6 +225,16 @@ impl TerminalConfig {
     /// Validates and appends a profile. Names are what tabs display: short,
     /// shell-friendly, unique.
     pub fn add(&mut self, name: &str, env: &str) -> anyhow::Result<()> {
+        self.add_with_stage(name, env, None)
+    }
+
+    /// `add`, with the environment badge the caller chose (None = infer).
+    pub fn add_with_stage(
+        &mut self,
+        name: &str,
+        env: &str,
+        stage: Option<Stage>,
+    ) -> anyhow::Result<()> {
         validate_name(name)?;
         if env.is_empty() {
             bail!("environment variable name is empty");
@@ -137,6 +255,7 @@ impl TerminalConfig {
         self.databases.push(DatabaseProfile {
             name: name.to_string(),
             env: env.to_string(),
+            stage,
         });
         Ok(())
     }
@@ -354,5 +473,87 @@ env = "STAGING_DATABASE_URL"
         let err = cfg.add("prod", "NOT VALID pw=1").unwrap_err().to_string();
         assert!(!err.contains("pw=1"), "{err}");
         assert!(cfg.databases.is_empty());
+    }
+
+    #[test]
+    fn stage_parses_and_labels() {
+        assert_eq!(Stage::parse("PROD"), Some(Stage::Prod));
+        assert_eq!(Stage::parse("staging"), Some(Stage::Staging));
+        assert_eq!(Stage::parse("production"), None);
+        assert_eq!(Stage::Prod.label(), "PROD");
+        assert_eq!(Stage::Local.label(), "LOCAL");
+    }
+
+    #[test]
+    fn stage_is_inferred_from_the_name_explicit_wins() {
+        assert_eq!(Stage::infer("production"), Some(Stage::Prod));
+        assert_eq!(Stage::infer("eu-prod-2"), Some(Stage::Prod));
+        assert_eq!(Stage::infer("staging"), Some(Stage::Staging));
+        assert_eq!(Stage::infer("stage"), Some(Stage::Staging));
+        assert_eq!(Stage::infer("localhost"), Some(Stage::Local));
+        assert_eq!(Stage::infer("dev-box"), Some(Stage::Dev));
+        assert_eq!(Stage::infer("analytics"), None);
+        let p = DatabaseProfile {
+            name: "production".into(),
+            env: "X".into(),
+            stage: Some(Stage::Dev),
+        };
+        assert_eq!(p.badge(), Some(Stage::Dev), "explicit stage beats the name");
+        let p = DatabaseProfile {
+            name: "production".into(),
+            env: "X".into(),
+            stage: None,
+        };
+        assert_eq!(p.badge(), Some(Stage::Prod));
+    }
+
+    #[test]
+    fn stage_and_ui_round_trip_and_old_files_still_load() {
+        let mut cfg = TerminalConfig::default();
+        cfg.add_with_stage("prod", "PROD_URL", Some(Stage::Prod))
+            .unwrap();
+        cfg.add("analytics", "AN_URL").unwrap();
+        cfg.ui.bell = true;
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("stage = \"prod\""), "{text}");
+        assert!(
+            !text.contains("stage = \"\""),
+            "absent stage must not serialize: {text}"
+        );
+        let back: TerminalConfig = toml::from_str(&text).unwrap();
+        assert_eq!(back, cfg);
+        assert!(back.ui.bell && back.ui.sidebar_detail);
+
+        let old = "version = 1\n[[databases]]\nname = \"p\"\nenv = \"P_URL\"\n";
+        let cfg: TerminalConfig = toml::from_str(old).unwrap();
+        assert_eq!(cfg.databases[0].stage, None);
+        assert!(
+            cfg.ui.sidebar_detail && !cfg.ui.bell,
+            "ui defaults apply to old files"
+        );
+    }
+
+    #[test]
+    fn unknown_stage_is_an_error_naming_the_four() {
+        let bad =
+            "version = 1\n[[databases]]\nname = \"p\"\nenv = \"P_URL\"\nstage = \"production\"\n";
+        let err = toml::from_str::<TerminalConfig>(bad)
+            .unwrap_err()
+            .to_string();
+        for s in ["prod", "staging", "dev", "local"] {
+            assert!(err.contains(s), "error should name {s}: {err}");
+        }
+    }
+
+    #[test]
+    fn default_config_text_parses_to_the_defaults() {
+        let cfg: TerminalConfig = toml::from_str(DEFAULT_CONFIG_TEXT).unwrap();
+        assert_eq!(cfg.settings, Settings::default());
+        assert_eq!(cfg.ui, UiSettings::default());
+        assert!(cfg.databases.is_empty());
+        assert!(
+            DEFAULT_CONFIG_TEXT.contains("# stage"),
+            "the text is annotated"
+        );
     }
 }

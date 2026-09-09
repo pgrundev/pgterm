@@ -107,6 +107,7 @@ impl DbState {
         let mut db = DbState::new(DatabaseProfile {
             name: name.to_string(),
             env: String::new(),
+            stage: None,
         });
         db.source = ConnSource::Session(url);
         db
@@ -395,6 +396,7 @@ impl App {
                 self.dbs.push(DbState::new(DatabaseProfile {
                     name: name.to_string(),
                     env: env_name,
+                    stage: None,
                 }));
                 let idx = self.dbs.len() - 1;
                 self.selected = idx;
