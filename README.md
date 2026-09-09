@@ -295,6 +295,25 @@ stays in the pgrun CLI, where the confirmations already live.
 Needs [pgrun](https://github.com/pgrundev/pgrun-cli) on your PATH (or
 `PGRUN_BIN`), logged in. Without it the tab says so instead of failing.
 
+## Mouse
+
+Clicking works on the sidebar, the tabs, the pgbot sub-tabs, the palette, and
+the rows of the Data and Branches tabs. Whatever the pointer is over is
+**underlined**, so you can tell what will respond before you click.
+
+pgterm also asks the terminal for a hand pointer over those things, using
+`OSC 22`. That lands in **Ghostty, kitty, WezTerm, foot and xterm**; other
+terminals (including VS Code's) parse the sequence and discard it, so nothing
+is lost and nothing is printed. The underline is the part that works
+everywhere. Turn the request off with:
+
+```toml
+[ui]
+pointer = false
+```
+
+pgterm always hands the pointer back on the way out, including after a panic.
+
 ## Stages and badges
 
 Each database carries an environment badge — `PROD`, `STAGING`, `DEV`,

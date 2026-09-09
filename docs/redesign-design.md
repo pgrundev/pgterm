@@ -57,6 +57,7 @@ max_concurrent_checks = 3
 [ui]
 sidebar_detail = true          # slice 1 — second sidebar line per database
 bell = false                   # slice 1 — terminal bell with a toast
+pointer = true                 # hand pointer over clickable things (OSC 22)
 
 [[databases]]
 name = "production"

@@ -23,6 +23,7 @@ use crate::model::{Context, IndexesReport, WhyReport};
 use crate::palette::{self, PaletteCmd, PaletteItem, PaletteState};
 use crate::parser::UserCommand;
 use crate::pgrun::{self, Branch, PgrunCommand};
+use crate::pointer::{self, Shape};
 use crate::runner::{self, ConnSource, PgbotCommand, RunOutcome};
 use crate::sanitize::SafeError;
 
@@ -264,6 +265,10 @@ pub struct App {
     /// What the pointer is currently over, so the draw pass can show that it
     /// is clickable. Set from mouse motion, cleared when it leaves.
     pub hover: Option<Hit>,
+    /// The shape the terminal is currently showing, and a change waiting to be
+    /// written. The runtime does the writing; this only decides.
+    pointer_shape: Shape,
+    pointer_pending: Option<Shape>,
     pub version_note: Option<String>,
 }
 
@@ -302,6 +307,8 @@ impl App {
             size: (0, 0),
             hitmap: Vec::new(),
             hover: None,
+            pointer_shape: Shape::Default,
+            pointer_pending: None,
             version_note: None,
         }
     }
@@ -318,6 +325,23 @@ impl App {
     /// Consumed once by the runtime, which rings the bell.
     pub fn take_bell(&mut self) -> bool {
         std::mem::take(&mut self.bell_pending)
+    }
+
+    /// Ask for a hand over anything clickable. Recorded here, written by the
+    /// runtime, and only when it actually changes.
+    fn update_pointer(&mut self) {
+        if !self.ui.pointer {
+            return;
+        }
+        if let Some(next) = pointer::next(self.pointer_shape, self.hover.is_some()) {
+            self.pointer_shape = next;
+            self.pointer_pending = Some(next);
+        }
+    }
+
+    /// The shape change the runtime should write, if any.
+    pub fn take_pointer(&mut self) -> Option<Shape> {
+        self.pointer_pending.take()
     }
 
     fn notify(&mut self, text: String) {
@@ -1528,6 +1552,7 @@ impl App {
         // Motion only updates what looks clickable; it never acts.
         if matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
             self.hover = self.hit_at(m.column, m.row);
+            self.update_pointer();
             return Vec::new();
         }
         if !matches!(m.kind, MouseEventKind::Down(_)) {
@@ -2817,6 +2842,26 @@ mod tests {
         assert!(a.popup.is_none(), "hovering the add row opens nothing");
         a.update(moved(50, 9));
         assert!(a.hover.is_none(), "off every region clears the hover");
+
+        // The pointer shape follows the hover, and only on a change.
+        let mut a = app(2);
+        a.hitmap = vec![(Rect::new(0, 0, 10, 1), Hit::SelectDb(1))];
+        assert_eq!(a.take_pointer(), None, "nothing to say yet");
+        a.update(moved(3, 0));
+        assert_eq!(a.take_pointer(), Some(crate::pointer::Shape::Pointer));
+        a.update(moved(4, 0));
+        assert_eq!(a.take_pointer(), None, "still over the same row");
+        a.update(moved(50, 9));
+        assert_eq!(a.take_pointer(), Some(crate::pointer::Shape::Default));
+        assert_eq!(a.take_pointer(), None, "consumed once");
+
+        // Turned off, pgterm never touches the terminal's pointer.
+        let mut a = app(2);
+        a.ui.pointer = false;
+        a.hitmap = vec![(Rect::new(0, 0, 10, 1), Hit::SelectDb(1))];
+        a.update(moved(3, 0));
+        assert_eq!(a.hover, Some(Hit::SelectDb(1)), "hover still tracked");
+        assert_eq!(a.take_pointer(), None, "but no escape is queued");
 
         // A real click still acts.
         a.update(Action::Mouse(MouseEvent {
