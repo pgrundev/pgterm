@@ -301,4 +301,27 @@ mod tests {
             );
         }
     }
+
+    /// The README documents these keys; a table that drifts from the code is
+    /// worse than no table.
+    #[test]
+    fn readme_key_table_matches_the_keymap() {
+        let readme = include_str!("../README.md");
+        let table = readme
+            .split("## Keys")
+            .nth(1)
+            .expect("README has a Keys section");
+        for binding in KEYMAP {
+            let keys = binding.keys.join(" / ");
+            assert!(
+                table.contains(&keys),
+                "README key table is missing {keys:?}"
+            );
+            assert!(
+                table.contains(binding.help),
+                "README key table is missing {:?}",
+                binding.help
+            );
+        }
+    }
 }

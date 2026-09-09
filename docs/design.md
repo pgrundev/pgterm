@@ -1,3 +1,8 @@
+> **Superseded for the shell** by `docs/redesign-design.md` (2026-09-08):
+> the sidebar, tabs, Overview and palette replace the tab-strip UI described
+> below. The pgbot contracts, secret handling and safety rules here still
+> hold, and slices 2–4 (SQL, Data, Branches, Book) build on them.
+
 # pgterm — multi-database terminal UI for PostgreSQL (design)
 
 Condensed from the product brief (2026-08-26), updated for the standalone
