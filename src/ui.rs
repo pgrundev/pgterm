@@ -1034,4 +1034,41 @@ mod tests {
             queue = app.data_enter();
         }
     }
+
+    /// What the SQL tab shows when the database cannot be reached — the demo's
+    /// fake hosts land here, and so does a real one that is down.
+    #[test]
+    #[ignore]
+    fn show_sql_unreachable() {
+        let mut app = app_with(&["production"]);
+        app.dbs[0].source =
+            crate::runner::ConnSource::Session("postgres://u@mode-healthy.local:5432/app".into());
+        app.set_tab(crate::action::Tab::Sql);
+        app.dbs[0].sql = crate::editor::Editor::from_text("SELECT 1");
+        let effects = app.run_sql();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let conns =
+            std::sync::Arc::new(tokio::sync::Mutex::new(crate::app::Connections::default()));
+        for e in effects {
+            if let crate::action::Effect::SpawnSql {
+                db,
+                target,
+                sql,
+                policy,
+            } = e
+            {
+                let source = app.dbs[db].source.clone();
+                let action = rt.block_on(crate::app::run_sql_effect(
+                    conns.clone(),
+                    db,
+                    source,
+                    target,
+                    sql,
+                    policy,
+                ));
+                app.update(action);
+            }
+        }
+        println!("{}", render(&mut app, 110, 26));
+    }
 }

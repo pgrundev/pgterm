@@ -220,13 +220,25 @@ pub fn draw(f: &mut Frame, area: Rect, db: &DbState) {
             Style::default().fg(Color::Cyan),
         ))]
     } else if let Some(e) = &db.sql_error {
+        // The advice has to match the failure: a query you can fix, a
+        // connection you cannot.
+        use crate::sanitize::ErrorKind;
+        let hint = match e.kind {
+            ErrorKind::ConnectionFailed | ErrorKind::Timeout => {
+                " pgterm could not reach this database. Check its connection, then run again."
+            }
+            ErrorKind::EnvMissing => {
+                " Export the variable this database references, then restart pgterm."
+            }
+            _ => " Fix the query and run it again.",
+        };
         vec![
             Line::from(Span::styled(
                 format!(" {e}"),
                 Style::default().fg(Color::Red),
             )),
             Line::from(""),
-            Line::from(Span::styled(" Fix the query and run it again.", dim)),
+            Line::from(Span::styled(hint, dim)),
         ]
     } else if let Some(r) = &db.sql_result {
         result_lines(r, result_area.width as usize)
@@ -323,6 +335,46 @@ mod tests {
             .map(|s| s.content.to_string())
             .collect::<String>();
         assert!(text.contains("UPDATE 3") && text.contains("5 ms"), "{text}");
+    }
+
+    #[test]
+    fn the_hint_matches_the_kind_of_failure() {
+        use crate::config::DatabaseProfile;
+        use crate::sanitize::{ErrorKind, SafeError};
+        let mut db = crate::app::DbState::new(DatabaseProfile {
+            name: "prod".into(),
+            env: "P_URL".into(),
+            stage: None,
+            pgrun_project: None,
+            writes: false,
+        });
+        let render_hint = |db: &crate::app::DbState| {
+            let mut term =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+            term.draw(|f| draw(f, f.area(), db)).unwrap();
+            let buf = term.backend().buffer().clone();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        db.sql_error = Some(SafeError::new(ErrorKind::ConnectionFailed, "refused", None));
+        let s = render_hint(&db);
+        assert!(s.contains("could not reach"), "{s}");
+        assert!(
+            !s.contains("Fix the query"),
+            "wrong advice for a dead connection: {s}"
+        );
+
+        db.sql_error = Some(SafeError::new(ErrorKind::QueryFailed, "syntax error", None));
+        assert!(render_hint(&db).contains("Fix the query"));
+
+        db.sql_error = Some(SafeError::new(ErrorKind::EnvMissing, "not set", None));
+        assert!(render_hint(&db).contains("Export the variable"));
     }
 
     #[test]

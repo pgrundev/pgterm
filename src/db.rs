@@ -139,8 +139,16 @@ fn tls_config() -> Result<ClientConfig, SafeError> {
 /// tokio-postgres parses — pgterm does not weaken it.
 pub async fn connect(source: &ConnSource) -> Result<Client, SafeError> {
     let dsn = source.resolve()?;
+    // tokio-postgres' own Display is terse ("error connecting to server");
+    // the reason lives in the source chain, and the reason is the useful part.
     let fail = |e: tokio_postgres::Error| {
-        SafeError::new(ErrorKind::ConnectionFailed, &e.to_string(), Some(&dsn))
+        let mut msg = e.to_string();
+        let mut src = std::error::Error::source(&e);
+        while let Some(cause) = src {
+            msg.push_str(&format!(": {cause}"));
+            src = cause.source();
+        }
+        SafeError::new(ErrorKind::ConnectionFailed, &msg, Some(&dsn))
     };
 
     let config: tokio_postgres::Config = dsn.parse().map_err(|e: tokio_postgres::Error| {
