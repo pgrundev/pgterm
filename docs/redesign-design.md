@@ -54,6 +54,10 @@ version = 1
 interval_seconds = 60
 max_concurrent_checks = 3
 
+[ui]
+sidebar_detail = true          # slice 1 — second sidebar line per database
+bell = false                   # slice 1 — terminal bell with a toast
+
 [[databases]]
 name = "production"
 env = "PROD_DATABASE_URL"      # the VARIABLE name (unchanged)
@@ -116,6 +120,11 @@ the tab row. Everything else is identical. Minimum size stays 80×24.
 - Badges: `PROD` yellow, `STAGING` cyan, `DEV` green, `LOCAL` dark gray, all
   bold; no badge when stage is unknown. Text, not colour, carries the meaning.
 - `+ Add database` row (Hit::OpenAdd).
+- With `ui.sidebar_detail = true` (the default) every database takes two
+  rows: the row above, then a dim detail line — `PostgreSQL 17 · 12s ago`
+  when healthy, the top finding's title when warning or critical, the
+  sanitized error when unavailable. The detail line is what lets you decide
+  which database to look at without switching to it. Off, rows are one line.
 - A `BRANCHES` section appears in slice 3.
 
 ### Tabs (`Tab` enum on `App`, one current tab per database)
@@ -197,6 +206,26 @@ into the palette is passed through to the command bar's parser, so the
 palette is a superset of the bar. The parser gains the verbs `overview` and
 `pgbot`.
 
+### Attention, toasts, and help (borrowed from Herdr's rollup model)
+
+- **Rollups.** A state change you have not looked at stays marked until you
+  do, at every level that contains it. Today that is the sidebar row's
+  `attention` flag. It extends to tabs: the `PgBot` tab label is bold while
+  the finding set changed since that tab was last viewed on that database;
+  viewing clears it. Slice 3 adds branches to the rollup (a failed branch
+  marks its database row).
+- **Toasts.** When a database you are not looking at turns critical or
+  unavailable, a one-line toast appears at the right end of the command
+  bar row for five seconds — `staging is critical · [ to open` — and the
+  terminal bell rings if `ui.bell = true`. Nothing fires for the database
+  you are already looking at, or for recoveries.
+- **Help from the keymap.** The `?` overlay is generated from the same key
+  table `App::update` dispatches on (`src/keymap.rs`: key, context, action,
+  description), so the help can never drift from the bindings. The README
+  key table is checked against it by a test.
+- **`pgterm --default-config`** prints the annotated default `config.toml`
+  to stdout and exits, so a first file is one redirect away.
+
 ### Add-database popup and CLI
 
 - Popup gains a `Stage` field after Name: `←`/`→`/Space cycle
@@ -231,12 +260,19 @@ palette is a superset of the bar. The parser gains the verbs `overview` and
   shows critical first with confidence labels; unavailable status line.
 - `screens/overview.rs`: pure helpers (`confidence_label`, version digits,
   finding ordering) unit-tested.
+- `keymap.rs`: every binding has a description; no duplicate key within a
+  context; the help text lists every binding; the README key table matches.
+- `app.rs`: PgBot tab bold-until-viewed; toast appears for an unselected
+  database turning critical, not for the selected one, not for recovery;
+  toast expires; `--default-config` output parses back to the defaults.
+- `ui.rs`: sidebar detail lines on and off; toast rendered on the command
+  bar row.
 - Existing tests updated for the key changes; nothing else regresses.
 
 ### Files (slice 1)
 
-New: `src/palette.rs`, `src/screens/overview.rs`, `src/screens/sidebar.rs`,
-`src/screens/tabs.rs`. Changed: `action.rs` (Tab, Pane, Hit variants,
+New: `src/palette.rs`, `src/keymap.rs`, `src/screens/overview.rs`,
+`src/screens/sidebar.rs`, `src/screens/tabs.rs`. Changed: `action.rs` (Tab, Pane, Hit variants,
 Palette actions), `app.rs` (pane/tab/palette state and keys), `ui.rs`
 (layout), `config.rs`, `cli.rs`, `parser.rs`, `model.rs`, `format.rs`,
 `screens/mod.rs`, `screens/states.rs` (welcome mentions the palette),
@@ -324,6 +360,12 @@ the tab. pgbook v0.2.0 (`--json`) ships first as that spec describes.
   (`docs/releasing.md`).
 - `install.sh` bootstraps pgbot today; pgrun and pgbook bootstraps arrive
   with their slices, each with a `PGTERM_NO_<TOOL>=1` opt-out.
+- Windows ships with v0.2.0: a `windows-amd64` zip in the release matrix
+  (the test suite already runs there) and `install.ps1`
+  (`irm https://pgterm.dev/install.ps1 | iex`), mirroring the Unix installer.
+- A docs site follows the shell: install, quick start, concepts (databases,
+  stages, tabs), configuration and keys, then one page per tab as each
+  slice ships. The hero is the real wide layout captured from a session.
 
 ## Out of scope
 
