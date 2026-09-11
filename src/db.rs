@@ -135,25 +135,20 @@ fn tls_config() -> Result<ClientConfig, SafeError> {
         .with_no_client_auth())
 }
 
-/// Opens a connection. TLS follows the DSN's own `sslmode`, which
-/// tokio-postgres parses — pgterm does not weaken it.
-pub async fn connect(source: &ConnSource) -> Result<Client, SafeError> {
+/// Opens a connection, through the profile's SSH jump host when it has one.
+/// TLS follows the DSN's own `sslmode`, which tokio-postgres parses — pgterm
+/// does not weaken it, tunneled or not.
+pub async fn connect(source: &ConnSource, ssh: Option<&str>) -> Result<Client, SafeError> {
     let dsn = source.resolve()?;
-    // tokio-postgres' own Display is terse ("error connecting to server");
-    // the reason lives in the source chain, and the reason is the useful part.
-    let fail = |e: tokio_postgres::Error| {
-        let mut msg = e.to_string();
-        let mut src = std::error::Error::source(&e);
-        while let Some(cause) = src {
-            msg.push_str(&format!(": {cause}"));
-            src = cause.source();
-        }
-        SafeError::new(ErrorKind::ConnectionFailed, &msg, Some(&dsn))
-    };
+    let fail = |e: tokio_postgres::Error| chain_error(e, &dsn);
 
     let config: tokio_postgres::Config = dsn.parse().map_err(|e: tokio_postgres::Error| {
         SafeError::new(ErrorKind::Usage, &e.to_string(), Some(&dsn))
     })?;
+
+    if let Some(spec) = ssh {
+        return connect_ssh(&config, &dsn, spec).await;
+    }
 
     let connect_tls = async {
         let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config()?);
@@ -184,10 +179,7 @@ pub async fn connect(source: &ConnSource) -> Result<Client, SafeError> {
         Err(tls_err) => {
             // A server with TLS off refuses the handshake; fall back to plain
             // only when the DSN did not demand TLS.
-            let demanded = dsn.contains("sslmode=require")
-                || dsn.contains("sslmode=verify-ca")
-                || dsn.contains("sslmode=verify-full");
-            if demanded {
+            if dsn_demands_tls(&dsn) {
                 return Err(tls_err);
             }
             match tokio::time::timeout(CONNECT_TIMEOUT, config.connect(NoTls)).await {
@@ -211,6 +203,135 @@ fn timeout_error() -> SafeError {
         &format!("no connection within {}s", CONNECT_TIMEOUT.as_secs()),
         None,
     )
+}
+
+/// tokio-postgres' own Display is terse ("error connecting to server");
+/// the reason lives in the source chain, and the reason is the useful part.
+fn chain_error(e: tokio_postgres::Error, dsn: &str) -> SafeError {
+    let mut msg = e.to_string();
+    let mut src = std::error::Error::source(&e);
+    while let Some(cause) = src {
+        msg.push_str(&format!(": {cause}"));
+        src = cause.source();
+    }
+    SafeError::new(ErrorKind::ConnectionFailed, &msg, Some(dsn))
+}
+
+fn dsn_demands_tls(dsn: &str) -> bool {
+    dsn.contains("sslmode=require")
+        || dsn.contains("sslmode=verify-ca")
+        || dsn.contains("sslmode=verify-full")
+}
+
+/// `connect`, through an SSH jump host: the TCP leg is an `ssh -W` child, and
+/// the Postgres startup (TLS negotiation included) runs over its stdio via
+/// `connect_raw`. The DSN's hostname is what TLS verifies — the tunnel never
+/// rewrites it to a loopback address.
+async fn connect_ssh(
+    config: &tokio_postgres::Config,
+    dsn: &str,
+    spec: &str,
+) -> Result<Client, SafeError> {
+    use tokio_postgres::config::Host;
+    use tokio_postgres::tls::MakeTlsConnect;
+
+    let spec = crate::ssh::Spec::parse(spec)
+        .map_err(|e| SafeError::new(ErrorKind::Usage, &e, Some(dsn)))?;
+    let host = match config.get_hosts().first() {
+        Some(Host::Tcp(h)) => h.clone(),
+        #[cfg(unix)]
+        Some(Host::Unix(_)) => {
+            return Err(SafeError::new(
+                ErrorKind::Usage,
+                "a unix-socket DSN cannot go through an SSH tunnel — name the host and port the jump host can reach",
+                Some(dsn),
+            ))
+        }
+        None => {
+            return Err(SafeError::new(
+                ErrorKind::Usage,
+                "the DSN names no host to tunnel to",
+                Some(dsn),
+            ))
+        }
+    };
+    let port = config.get_ports().first().copied().unwrap_or(5432);
+
+    // A failed login or refused forward surfaces as EOF on the stream; ssh's
+    // stderr has the actual reason, so it is folded into the error.
+    let fail = |e: tokio_postgres::Error, stderr: &std::sync::Arc<std::sync::Mutex<String>>| {
+        let mut err = chain_error(e, dsn);
+        if let Ok(said) = stderr.lock() {
+            let said = said.trim();
+            if !said.is_empty() {
+                err = SafeError::new(
+                    err.kind,
+                    &format!("{} — ssh: {said}", err.message),
+                    Some(dsn),
+                );
+            }
+        }
+        err
+    };
+
+    let connect_tls = async {
+        let stream = crate::ssh::open(&spec, &host, port)?;
+        let stderr = stream.stderr_handle();
+        let mut mk = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config()?);
+        let tls = <tokio_postgres_rustls::MakeRustlsConnect as MakeTlsConnect<
+            crate::ssh::SshStream,
+        >>::make_tls_connect(&mut mk, &host)
+        .map_err(|e| SafeError::new(ErrorKind::ConnectionFailed, &e.to_string(), Some(dsn)))?;
+        match config.connect_raw(stream, tls).await {
+            Ok(pair) => Ok(pair),
+            Err(e) => {
+                // Give the stderr reader a beat to collect ssh's last words.
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                Err(fail(e, &stderr))
+            }
+        }
+    };
+    let tls_attempt = match tokio::time::timeout(CONNECT_TIMEOUT, connect_tls).await {
+        Ok(r) => r,
+        Err(_) => Err(timeout_error()),
+    };
+    match tls_attempt {
+        Ok((client, connection)) => {
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            Ok(client)
+        }
+        Err(tls_err) => {
+            // Same fallback contract as the direct path: plain only when the
+            // DSN did not demand TLS — over a fresh tunnel, the first ssh died
+            // with its stream.
+            if dsn_demands_tls(dsn) {
+                return Err(tls_err);
+            }
+            let connect_plain = async {
+                let stream = crate::ssh::open(&spec, &host, port)?;
+                let stderr = stream.stderr_handle();
+                match config.connect_raw(stream, NoTls).await {
+                    Ok(pair) => Ok(pair),
+                    Err(e) => {
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        Err(fail(e, &stderr))
+                    }
+                }
+            };
+            match tokio::time::timeout(CONNECT_TIMEOUT, connect_plain).await {
+                Ok(Ok((client, connection))) => {
+                    tokio::spawn(async move {
+                        let _ = connection.await;
+                    });
+                    Ok(client)
+                }
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(timeout_error()),
+            }
+        }
+    }
 }
 
 /// Runs one buffer inside a bounded transaction and renders the result.
@@ -520,13 +641,90 @@ mod tests {
         assert!(strip_sql_noise("SELECT x FROM t").contains("FROM t"));
     }
 
+    /// Both halves mutate PGTERM_SSH_BIN, and lib tests share the process
+    /// environment — one test, sequential, so they cannot race each other.
+    #[cfg(unix)]
+    #[test]
+    fn ssh_tunnel_failures_say_what_actually_went_wrong() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dsn = "postgres://u:pw@db.internal:5432/app?sslmode=disable";
+
+        // No ssh at all: the error names the requirement and the override.
+        std::env::set_var("PGTERM_SSH_BIN", "/nonexistent/pgterm-test-ssh");
+        let err =
+            rt.block_on(async { connect(&ConnSource::Session(dsn.into()), Some("bastion")).await });
+        let err = err.expect_err("no ssh, no tunnel");
+        assert!(err.to_string().contains("OpenSSH"), "{err}");
+
+        // A stand-in ssh that refuses the way a real one does: reason on
+        // stderr, nothing on stdout. The error the SQL tab shows must carry
+        // that reason, not just "unexpected EOF".
+        let dir = std::env::temp_dir().join(format!("pgterm-ssh-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("ssh");
+        let mut f = std::fs::File::create(&fake).unwrap();
+        f.write_all(b"#!/bin/sh\necho 'Permission denied (publickey).' >&2\nexit 255\n")
+            .unwrap();
+        drop(f);
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("PGTERM_SSH_BIN", &fake);
+
+        let err = rt.block_on(async {
+            connect(&ConnSource::Session(dsn.into()), Some("deploy@bastion")).await
+        });
+        std::env::remove_var("PGTERM_SSH_BIN");
+        let _ = std::fs::remove_dir_all(&dir);
+        let err = err.expect_err("a refused ssh login cannot connect");
+        assert!(
+            err.to_string().contains("Permission denied"),
+            "ssh's reason is missing: {err}"
+        );
+        assert!(!err.to_string().contains(":pw@"), "password leaked: {err}");
+    }
+
+    #[test]
+    fn ssh_tunnel_refuses_a_unix_socket_dsn() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt.block_on(async {
+            let source =
+                ConnSource::Session("postgres://u:pw@%2Fvar%2Frun%2Fpostgresql/app".into());
+            connect(&source, Some("bastion")).await
+        });
+        let err = err.expect_err("a socket path cannot be tunneled");
+        assert!(err.to_string().contains("unix-socket"), "{err}");
+    }
+
     /// Against a real database:
     /// `PGTERM_TEST_DATABASE_URL=postgres://... cargo test --lib live_ -- --ignored --nocapture`
+    /// Add `PGTERM_TEST_SSH_TUNNEL=[user@]host[:port]` to run the tunnel test.
     fn live_source() -> Option<ConnSource> {
         std::env::var("PGTERM_TEST_DATABASE_URL")
             .ok()
             .filter(|u| !u.is_empty())
             .map(ConnSource::Session)
+    }
+
+    #[test]
+    #[ignore]
+    fn live_ssh_tunnel_runs_a_query() {
+        let (Some(source), Ok(spec)) = (live_source(), std::env::var("PGTERM_TEST_SSH_TUNNEL"))
+        else {
+            println!("set PGTERM_TEST_DATABASE_URL and PGTERM_TEST_SSH_TUNNEL to run this");
+            return;
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut c = connect(&source, Some(&spec))
+                .await
+                .expect("tunneled connect");
+            let r = run_sql(&mut c, "SELECT 1 AS one", WritePolicy::ReadOnly)
+                .await
+                .expect("select over the tunnel");
+            assert_eq!(r.rows[0], vec!["1"]);
+        });
     }
 
     #[test]
@@ -538,7 +736,7 @@ mod tests {
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let mut c = connect(&source).await.expect("connect");
+            let mut c = connect(&source, None).await.expect("connect");
 
             let r = run_sql(
                 &mut c,

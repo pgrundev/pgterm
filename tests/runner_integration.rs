@@ -20,6 +20,7 @@ async fn healthy_run_returns_json_stdout() {
     let out = run_pgbot(
         &bin,
         &ConnSource::Env("IT_HEALTHY_URL".into()),
+        None,
         &PgbotCommand::Monitor,
         Duration::from_secs(10),
     )
@@ -41,6 +42,7 @@ async fn warn_exit_one_still_carries_json() {
     let out = run_pgbot(
         &bin,
         &ConnSource::Env("IT_WARN_URL".into()),
+        None,
         &PgbotCommand::Monitor,
         Duration::from_secs(10),
     )
@@ -61,6 +63,7 @@ async fn refused_connection_is_sanitized() {
     let err = run_pgbot(
         &bin,
         &ConnSource::Env("IT_REFUSE_URL".into()),
+        None,
         &PgbotCommand::Monitor,
         Duration::from_secs(10),
     )
@@ -88,6 +91,7 @@ async fn hang_is_killed_at_the_deadline() {
     let err = run_pgbot(
         &bin,
         &ConnSource::Env("IT_HANG_URL".into()),
+        None,
         &PgbotCommand::Monitor,
         Duration::from_millis(300),
     )
@@ -111,6 +115,7 @@ async fn missing_env_never_spawns_pgbot() {
     let err = run_pgbot(
         &bin,
         &ConnSource::Env("IT_DOES_NOT_EXIST".into()),
+        None,
         &PgbotCommand::Monitor,
         Duration::from_secs(5),
     )
@@ -131,6 +136,7 @@ async fn missing_binary_reports_pgbot_missing() {
     let err = run_pgbot(
         std::path::Path::new("/nonexistent/pgbot"),
         &ConnSource::Env("IT_BIN_URL".into()),
+        None,
         &PgbotCommand::Monitor,
         Duration::from_secs(5),
     )
@@ -149,6 +155,7 @@ async fn indexes_and_why_reach_their_own_reports() {
     let idx = run_pgbot(
         &bin,
         &ConnSource::Env("IT_REPORTS_URL".into()),
+        None,
         &PgbotCommand::Indexes,
         Duration::from_secs(10),
     )
@@ -160,6 +167,7 @@ async fn indexes_and_why_reach_their_own_reports() {
     let why = run_pgbot(
         &bin,
         &ConnSource::Env("IT_REPORTS_URL".into()),
+        None,
         &PgbotCommand::Why,
         Duration::from_secs(10),
     )
@@ -179,6 +187,7 @@ async fn dsn_travels_by_env_not_argv() {
     run_pgbot(
         &bin,
         &ConnSource::Env("IT_ENVONLY_URL".into()),
+        None,
         &PgbotCommand::Monitor,
         Duration::from_secs(10),
     )
@@ -193,4 +202,51 @@ async fn dsn_travels_by_env_not_argv() {
         env_url.contains("mode-healthy"),
         "child env missing DATABASE_URL: {env_url}"
     );
+}
+
+#[tokio::test]
+async fn profile_ssh_reaches_pgbot_as_its_native_tunnel_env() {
+    let _env = common::env_lock();
+    let dir = common::TempDir::new("run-ssh");
+    let bin = common::write_fake_pgbot(dir.path());
+    std::env::set_var("IT_SSH_URL", common::dsn("healthy"));
+
+    run_pgbot(
+        &bin,
+        &ConnSource::Env("IT_SSH_URL".into()),
+        Some("deploy@bastion.internal:2222"),
+        &PgbotCommand::Monitor,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    let log = std::fs::read_to_string(dir.path().join("ssh.log")).unwrap();
+    assert_eq!(log.trim(), "deploy@bastion.internal:2222");
+    // Never in argv either — the spec travels as env, like the DSN.
+    let argv = std::fs::read_to_string(dir.path().join("invocations.log")).unwrap();
+    assert!(!argv.contains("bastion"), "spec leaked into argv: {argv}");
+}
+
+#[tokio::test]
+async fn ambient_tunnel_env_is_stripped_when_the_profile_has_none() {
+    let _env = common::env_lock();
+    let dir = common::TempDir::new("run-ssh-strip");
+    let bin = common::write_fake_pgbot(dir.path());
+    std::env::set_var("IT_SSH_STRIP_URL", common::dsn("healthy"));
+    // An exported PGBOT_SSH_TUNNEL would reroute EVERY database; only the
+    // profile may say so.
+    std::env::set_var("PGBOT_SSH_TUNNEL", "ambient@leak");
+
+    run_pgbot(
+        &bin,
+        &ConnSource::Env("IT_SSH_STRIP_URL".into()),
+        None,
+        &PgbotCommand::Monitor,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    std::env::remove_var("PGBOT_SSH_TUNNEL");
+    let log = std::fs::read_to_string(dir.path().join("ssh.log")).unwrap();
+    assert_eq!(log.trim(), "-", "the ambient spec reached the child");
 }

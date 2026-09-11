@@ -32,9 +32,11 @@ async fn sweep(app: &mut App, bin: &std::path::Path, permits: usize) {
     for e in effects {
         if let Effect::Spawn { db, cmd, kind } = e {
             let source = app.dbs[db].source.clone();
+            let ssh = app.dbs[db].profile.ssh.clone();
             joins.push(tokio::spawn(run_effect(
                 bin.to_path_buf(),
                 source,
+                ssh,
                 db,
                 cmd,
                 kind,

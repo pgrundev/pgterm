@@ -19,6 +19,9 @@ pub struct AddOptions {
     pub open: bool,
     /// The environment badge to save with the profile; None = infer it.
     pub stage: Option<Stage>,
+    /// SSH jump host the database is reached through; validated and saved
+    /// with the profile.
+    pub ssh: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +41,8 @@ pub enum Invocation {
 }
 
 const USAGE: &str = "usage: pgterm [--interval <dur>] [--no-monitor]
-       pgterm add <name> [--env <ENV_NAME>] [--stage prod|staging|dev|local] [--open]
+       pgterm add <name> [--env <ENV_NAME>] [--stage prod|staging|dev|local]
+                  [--ssh [user@]host[:port]] [--open]
        pgterm list
        pgterm remove <name>
        pgterm --default-config";
@@ -53,6 +57,7 @@ pub fn parse_args(args: &[String]) -> Invocation {
             let mut env = None;
             let mut open = false;
             let mut stage = None;
+            let mut ssh = None;
             while let Some(a) = it.next() {
                 match a.as_str() {
                     "--env" => match it.next() {
@@ -60,6 +65,14 @@ pub fn parse_args(args: &[String]) -> Invocation {
                         None => return Invocation::Usage("--env needs a value".into()),
                     },
                     "--open" => open = true,
+                    "--ssh" => match it.next() {
+                        Some(v) => ssh = Some(v.clone()),
+                        None => {
+                            return Invocation::Usage(
+                                "--ssh needs a jump host ([user@]host[:port])".into(),
+                            )
+                        }
+                    },
                     "--stage" => match it.next().and_then(|v| Stage::parse(v)) {
                         Some(st) => stage = Some(st),
                         None => {
@@ -81,6 +94,7 @@ pub fn parse_args(args: &[String]) -> Invocation {
                     env,
                     open,
                     stage,
+                    ssh,
                 }),
                 None => Invocation::Usage("add needs a database name".into()),
             }
@@ -188,7 +202,10 @@ pub async fn cmd_add(opts: &AddOptions) -> i32 {
             return EXIT_FAILED;
         }
     };
-    if let Err(e) = cfg.clone().add(&opts.name, &env_name) {
+    if let Err(e) =
+        cfg.clone()
+            .add_with_stage(&opts.name, &env_name, opts.stage, opts.ssh.as_deref())
+    {
         eprintln!("pgterm: {e}");
         eprintln!("Nothing was saved.");
         return EXIT_FAILED;
@@ -203,10 +220,14 @@ pub async fn cmd_add(opts: &AddOptions) -> i32 {
         println!("✓ Found {env_name}");
     }
 
-    println!("Testing {}...\n", opts.name);
+    match &opts.ssh {
+        Some(spec) => println!("Testing {} (via ssh {spec})...\n", opts.name),
+        None => println!("Testing {}...\n", opts.name),
+    }
     let probe = runner::run_pgbot(
         &runner::pgbot_bin(),
         &ConnSource::Env(env_name.clone()),
+        opts.ssh.as_deref(),
         &PgbotCommand::Probe,
         runner::default_timeout(&PgbotCommand::Probe),
     )
@@ -250,7 +271,7 @@ pub async fn cmd_add(opts: &AddOptions) -> i32 {
         }
     }
 
-    if let Err(e) = cfg.add_with_stage(&opts.name, &env_name, opts.stage) {
+    if let Err(e) = cfg.add_with_stage(&opts.name, &env_name, opts.stage, opts.ssh.as_deref()) {
         eprintln!("pgterm: {e}\nNothing was saved.");
         return EXIT_FAILED;
     }
@@ -361,7 +382,8 @@ mod tests {
                 name: "prod".into(),
                 env: None,
                 open: false,
-                stage: None
+                stage: None,
+                ssh: None
             })
         );
         assert_eq!(
@@ -370,7 +392,8 @@ mod tests {
                 name: "prod".into(),
                 env: Some("PROD_URL".into()),
                 open: true,
-                stage: None
+                stage: None,
+                ssh: None
             })
         );
         assert!(matches!(parse_args(&s(&["add"])), Invocation::Usage(_)));
@@ -453,6 +476,25 @@ mod tests {
             parse_args(&s(&["add", "p", "--stage"])),
             Invocation::Usage(_)
         ));
+    }
+
+    #[test]
+    fn add_takes_an_ssh_jump_host() {
+        match parse_args(&s(&[
+            "add",
+            "prod",
+            "--env",
+            "P",
+            "--ssh",
+            "deploy@bastion",
+        ])) {
+            Invocation::Add(o) => assert_eq!(o.ssh.as_deref(), Some("deploy@bastion")),
+            other => panic!("{other:?}"),
+        }
+        match parse_args(&s(&["add", "p", "--ssh"])) {
+            Invocation::Usage(msg) => assert!(msg.contains("jump host"), "{msg}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

@@ -19,4 +19,5 @@ pub mod pointer;
 pub mod runner;
 pub mod sanitize;
 pub mod screens;
+pub mod ssh;
 pub mod ui;

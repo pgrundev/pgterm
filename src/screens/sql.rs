@@ -347,6 +347,7 @@ mod tests {
             stage: None,
             pgrun_project: None,
             writes: false,
+            ssh: None,
         });
         let render_hint = |db: &crate::app::DbState| {
             let mut term =
