@@ -128,6 +128,27 @@ echo "export STAGING_DATABASE_URL='postgresql://...'" >> ~/.zshrc
 
 `pgterm list` shows every profile and whether its variable is currently set.
 
+### Databases behind an SSH jump host
+
+If a database only answers from inside a bastion or private network, tell the
+profile how to get there:
+
+```bash
+pgterm add production --env PROD_DATABASE_URL --ssh deploy@bastion.example.com
+```
+
+`--ssh` takes `[user@]host[:port]` or a bare `~/.ssh/config` alias — your own
+ssh resolves it, so `HostName`, `IdentityFile`, `ProxyJump`, the agent and
+`known_hosts` all behave exactly as they do when you type `ssh bastion`
+yourself. The DSN keeps naming the **real** database host: no local port is
+opened, `sslmode=verify-full` still verifies that hostname, and `.pgpass`
+still matches on it.
+
+Health checks hand the spec to pgbot, which tunnels natively. The SQL and
+Data tabs ride an `ssh -W` child process in BatchMode — it never prompts, so
+authenticate once (`ssh bastion`) or load your key into the agent first; a
+refused login shows ssh's own reason in the tab.
+
 ### Adding from inside the UI
 
 Press `a` (or click `+ Add database`). Name, then Stage (`←`/`→` cycles
@@ -348,6 +369,7 @@ bell = false            # ring the terminal bell with a toast
 name = "production"
 env = "PROD_DATABASE_URL"
 stage = "prod"          # prod | staging | dev | local — inferred when absent
+ssh = "deploy@bastion"  # optional: reach it through this SSH jump host
 ```
 
 When a database you are *not* looking at turns critical or unavailable, a

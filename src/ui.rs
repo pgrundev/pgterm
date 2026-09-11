@@ -993,10 +993,12 @@ mod tests {
             } = e
             {
                 let source = app.dbs[db].source.clone();
+                let ssh = app.dbs[db].profile.ssh.clone();
                 let action = rt.block_on(crate::app::run_sql_effect(
                     conns.clone(),
                     db,
                     source,
+                    ssh,
                     target,
                     sql,
                     policy,
@@ -1019,10 +1021,12 @@ mod tests {
                 } = e
                 {
                     let source = app.dbs[db].source.clone();
+                    let ssh = app.dbs[db].profile.ssh.clone();
                     let action = rt.block_on(crate::app::run_sql_effect(
                         conns.clone(),
                         db,
                         source,
+                        ssh,
                         target,
                         sql,
                         policy,
@@ -1058,10 +1062,12 @@ mod tests {
             } = e
             {
                 let source = app.dbs[db].source.clone();
+                let ssh = app.dbs[db].profile.ssh.clone();
                 let action = rt.block_on(crate::app::run_sql_effect(
                     conns.clone(),
                     db,
                     source,
+                    ssh,
                     target,
                     sql,
                     policy,

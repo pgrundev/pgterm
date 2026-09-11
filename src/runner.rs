@@ -134,6 +134,7 @@ pub struct RunOutcome {
 pub async fn run_pgbot(
     pgbot_bin: &Path,
     source: &ConnSource,
+    ssh: Option<&str>,
     cmd: &PgbotCommand,
     timeout: Duration,
 ) -> Result<RunOutcome, SafeError> {
@@ -149,6 +150,17 @@ pub async fn run_pgbot(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // pgbot tunnels natively. The profile is the only source of the spec: an
+    // ambient PGBOT_SSH_TUNNEL would silently reroute EVERY database, so it is
+    // stripped when the profile has none — same rule as PGBOT_DATABASE_URL.
+    match ssh {
+        Some(spec) => {
+            c.env("PGBOT_SSH_TUNNEL", spec);
+        }
+        None => {
+            c.env_remove("PGBOT_SSH_TUNNEL");
+        }
+    }
 
     let child = match c.spawn() {
         Ok(ch) => ch,

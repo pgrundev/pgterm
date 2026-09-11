@@ -182,6 +182,7 @@ impl DbState {
             stage: None,
             pgrun_project: None,
             writes: false,
+            ssh: None,
         });
         db.source = ConnSource::Session(url);
         db
@@ -985,7 +986,7 @@ impl App {
                             }
                         };
                         if let Err(e) = cfg
-                            .add_with_stage(name, env_name, stage)
+                            .add_with_stage(name, env_name, stage, None)
                             .and_then(|()| cfg.save())
                         {
                             popup.message = Some(Err(SafeError::new(
@@ -1031,7 +1032,7 @@ impl App {
                     ConnSource::Session(_) => unreachable!("handled above"),
                 };
                 if let Err(e) = cfg
-                    .add_with_stage(name, &env_name, stage)
+                    .add_with_stage(name, &env_name, stage, None)
                     .and_then(|()| cfg.save())
                 {
                     popup.message = Some(Err(SafeError::new(
@@ -1049,6 +1050,7 @@ impl App {
                     stage,
                     pgrun_project: None,
                     writes: false,
+                    ssh: None,
                 }));
                 let idx = self.dbs.len() - 1;
                 self.selected = idx;
@@ -1752,6 +1754,7 @@ fn parse_export_assignment(s: &str) -> Option<(String, String)> {
 pub async fn run_effect(
     pgbot_bin: PathBuf,
     source: ConnSource,
+    ssh: Option<String>,
     db: usize,
     cmd: PgbotCommand,
     kind: CmdKind,
@@ -1759,7 +1762,7 @@ pub async fn run_effect(
 ) -> Action {
     let _permit = sem.acquire_owned().await.ok();
     let timeout = runner::default_timeout(&cmd);
-    let result = runner::run_pgbot(&pgbot_bin, &source, &cmd, timeout)
+    let result = runner::run_pgbot(&pgbot_bin, &source, ssh.as_deref(), &cmd, timeout)
         .await
         .and_then(|out| decode_result(&cmd, &out));
     Action::CheckFinished { db, kind, result }
@@ -1779,6 +1782,7 @@ impl Connections {
         &mut self,
         db: usize,
         source: &ConnSource,
+        ssh: Option<&str>,
     ) -> Result<&mut tokio_postgres::Client, SafeError> {
         // A closed connection is indistinguishable from a working one until
         // it is used, so drop it and reconnect rather than fail the query.
@@ -1786,7 +1790,7 @@ impl Connections {
             self.0.remove(&db);
         }
         if let std::collections::hash_map::Entry::Vacant(slot) = self.0.entry(db) {
-            slot.insert(crate::db::connect(source).await?);
+            slot.insert(crate::db::connect(source, ssh).await?);
         }
         Ok(self.0.get_mut(&db).expect("present or just inserted"))
     }
@@ -1801,12 +1805,13 @@ pub async fn run_sql_effect(
     conns: Arc<tokio::sync::Mutex<Connections>>,
     db: usize,
     source: ConnSource,
+    ssh: Option<String>,
     target: SqlTarget,
     sql: String,
     policy: WritePolicy,
 ) -> Action {
     let mut guard = conns.lock().await;
-    let result = match guard.get(db, &source).await {
+    let result = match guard.get(db, &source, ssh.as_deref()).await {
         Ok(client) => crate::db::run_sql(client, &sql, policy).await.map(Box::new),
         Err(e) => Err(e),
     };
@@ -1844,9 +1849,16 @@ pub async fn run_probe(
 ) -> Action {
     let _permit = sem.acquire_owned().await.ok();
     let cmd = PgbotCommand::Probe;
-    let result = runner::run_pgbot(&pgbot_bin, &source, &cmd, runner::default_timeout(&cmd))
-        .await
-        .and_then(|out| decode_result(&cmd, &out));
+    // The add popup has no ssh field (yet); its probes always dial direct.
+    let result = runner::run_pgbot(
+        &pgbot_bin,
+        &source,
+        None,
+        &cmd,
+        runner::default_timeout(&cmd),
+    )
+    .await
+    .and_then(|out| decode_result(&cmd, &out));
     Action::ProbeFinished {
         name,
         source,

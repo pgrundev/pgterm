@@ -132,6 +132,8 @@ pointer = true
 # stage = \"prod\"              # prod | staging | dev | local \u{2014} badge; inferred from the name when absent
 # pgrun_project = \"acme-api\"  # show this pgrun project's branches for the database
 # writes = false               # true lets the SQL tab write (a PROD badge still asks first)
+# ssh = \"user@bastion\"         # reach the database through this SSH jump host
+#                              # ([user@]host[:port] or a ~/.ssh/config alias)
 ";
 
 /// One monitored database: a friendly name and the environment variable that
@@ -152,6 +154,11 @@ pub struct DatabaseProfile {
     /// READ ONLY transaction until this is set.
     #[serde(default, skip_serializing_if = "is_false")]
     pub writes: bool,
+    /// SSH jump host to reach this database through: `[user@]host[:port]`, or
+    /// a bare `~/.ssh/config` alias. Resolved by the user's own ssh — pgterm
+    /// stores the spec, never keys or passphrases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -257,17 +264,27 @@ impl TerminalConfig {
     /// Validates and appends a profile. Names are what tabs display: short,
     /// shell-friendly, unique.
     pub fn add(&mut self, name: &str, env: &str) -> anyhow::Result<()> {
-        self.add_with_stage(name, env, None)
+        self.add_with_stage(name, env, None, None)
     }
 
-    /// `add`, with the environment badge the caller chose (None = infer).
+    /// `add`, with the environment badge the caller chose (None = infer) and
+    /// the SSH jump host, if the database is only reachable through one.
     pub fn add_with_stage(
         &mut self,
         name: &str,
         env: &str,
         stage: Option<Stage>,
+        ssh: Option<&str>,
     ) -> anyhow::Result<()> {
         validate_name(name)?;
+        let ssh = match ssh {
+            None => None,
+            Some(spec) => match crate::ssh::Spec::parse(spec) {
+                // The original spelling is kept — it is what ssh will resolve.
+                Ok(_) => Some(spec.trim().to_string()),
+                Err(e) => bail!("--ssh: {e}"),
+            },
+        };
         if env.is_empty() {
             bail!("environment variable name is empty");
         }
@@ -290,6 +307,7 @@ impl TerminalConfig {
             stage,
             pgrun_project: None,
             writes: false,
+            ssh,
         });
         Ok(())
     }
@@ -533,6 +551,7 @@ env = "STAGING_DATABASE_URL"
             stage: Some(Stage::Dev),
             pgrun_project: None,
             writes: false,
+            ssh: None,
         };
         assert_eq!(p.badge(), Some(Stage::Dev), "explicit stage beats the name");
         let p = DatabaseProfile {
@@ -541,6 +560,7 @@ env = "STAGING_DATABASE_URL"
             stage: None,
             pgrun_project: None,
             writes: false,
+            ssh: None,
         };
         assert_eq!(p.badge(), Some(Stage::Prod));
     }
@@ -548,7 +568,7 @@ env = "STAGING_DATABASE_URL"
     #[test]
     fn stage_and_ui_round_trip_and_old_files_still_load() {
         let mut cfg = TerminalConfig::default();
-        cfg.add_with_stage("prod", "PROD_URL", Some(Stage::Prod))
+        cfg.add_with_stage("prod", "PROD_URL", Some(Stage::Prod), None)
             .unwrap();
         cfg.add("analytics", "AN_URL").unwrap();
         cfg.ui.bell = true;
@@ -569,6 +589,30 @@ env = "STAGING_DATABASE_URL"
             cfg.ui.sidebar_detail && !cfg.ui.bell,
             "ui defaults apply to old files"
         );
+    }
+
+    #[test]
+    fn ssh_round_trips_is_validated_and_old_files_load_without_it() {
+        let mut cfg = TerminalConfig::default();
+        cfg.add_with_stage("prod", "P_URL", None, Some("deploy@bastion:2222"))
+            .unwrap();
+        cfg.add("plain", "X_URL").unwrap();
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("ssh = \"deploy@bastion:2222\""), "{text}");
+        let back: TerminalConfig = toml::from_str(&text).unwrap();
+        assert_eq!(back, cfg);
+        assert_eq!(back.databases[1].ssh, None, "absent must stay absent");
+
+        // A spec that could read as an ssh option is refused at add time.
+        let err = cfg
+            .add_with_stage("evil", "E_URL", None, Some("-oProxyCommand=x"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--ssh"), "{err}");
+
+        let old = "version = 1\n[[databases]]\nname = \"p\"\nenv = \"P_URL\"\n";
+        let cfg: TerminalConfig = toml::from_str(old).unwrap();
+        assert_eq!(cfg.databases[0].ssh, None);
     }
 
     #[test]

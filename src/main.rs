@@ -174,11 +174,12 @@ fn perform(
                     continue;
                 };
                 let source = state.source.clone();
+                let ssh = state.profile.ssh.clone();
                 let bin = app.pgbot_bin.clone();
                 let tx = tx.clone();
                 let sem = sem.clone();
                 tokio::spawn(async move {
-                    let _ = tx.send(app::run_effect(bin, source, db, cmd, kind, sem).await);
+                    let _ = tx.send(app::run_effect(bin, source, ssh, db, cmd, kind, sem).await);
                 });
             }
             Effect::SpawnSql {
@@ -191,11 +192,13 @@ fn perform(
                     continue;
                 };
                 let source = state.source.clone();
+                let ssh = state.profile.ssh.clone();
                 let tx = tx.clone();
                 let conns = conns.clone();
                 tokio::spawn(async move {
-                    let _ =
-                        tx.send(app::run_sql_effect(conns, db, source, target, sql, policy).await);
+                    let _ = tx.send(
+                        app::run_sql_effect(conns, db, source, ssh, target, sql, policy).await,
+                    );
                 });
             }
             Effect::SpawnPgrun { db, cmd, open } => {

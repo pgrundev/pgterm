@@ -166,6 +166,7 @@ mod tests {
             stage: None,
             pgrun_project: project.map(String::from),
             writes: false,
+            ssh: None,
         });
         db.branches = branches;
         db
