@@ -237,16 +237,20 @@ async fn connect_ssh(
 
     let spec = crate::ssh::Spec::parse(spec)
         .map_err(|e| SafeError::new(ErrorKind::Usage, &e, Some(dsn)))?;
+    let socket_refused = || {
+        SafeError::new(
+            ErrorKind::Usage,
+            "a unix-socket DSN cannot go through an SSH tunnel — name the host and port the jump host can reach",
+            Some(dsn),
+        )
+    };
     let host = match config.get_hosts().first() {
+        // On non-unix targets a socket path parses as a Tcp "host"; it can
+        // never be tunneled, so refuse it the same way everywhere.
+        Some(Host::Tcp(h)) if h.starts_with('/') => return Err(socket_refused()),
         Some(Host::Tcp(h)) => h.clone(),
         #[cfg(unix)]
-        Some(Host::Unix(_)) => {
-            return Err(SafeError::new(
-                ErrorKind::Usage,
-                "a unix-socket DSN cannot go through an SSH tunnel — name the host and port the jump host can reach",
-                Some(dsn),
-            ))
-        }
+        Some(Host::Unix(_)) => return Err(socket_refused()),
         None => {
             return Err(SafeError::new(
                 ErrorKind::Usage,
