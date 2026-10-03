@@ -1,8 +1,38 @@
-# pgterm
+<h1 align="center">pgterm</h1>
 
-**htop for all your Postgres databases** — an interactive terminal UI that
-monitors every database you care about in one place, powered by
-[pgbot](https://pgbot.dev)'s read-only diagnostics.
+<p align="center">
+  <strong>htop for all your Postgres databases.</strong><br>
+  One static binary watches every database you care about in one place, runs
+  <a href="https://pgbot.dev">pgbot</a>'s read-only diagnostics against each of
+  them, and gives you SQL, a data browser and your branches without leaving the
+  terminal.<br>
+  No agent, no daemon, no web dashboard.
+</p>
+
+<p align="center">
+  <a href="https://github.com/pgrundev/pgterm/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/pgrundev/pgterm/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/pgrundev/pgterm/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/pgrundev/pgterm"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+  <img alt="macOS · Linux · Windows" src="https://img.shields.io/badge/macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-informational">
+  <img alt="PostgreSQL 14–18" src="https://img.shields.io/badge/postgres-14%E2%80%9318-336791">
+</p>
+
+<p align="center">
+  <a href="#try-it-in-10-seconds-no-database-needed">Demo</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#the-tabs">Tabs</a> ·
+  <a href="#keys">Keys</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#security-posture">Security</a> ·
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
+
+> **Status: beta.** The interface is still moving between minor versions.
+> pgterm reads [pgbot](https://pgbot.dev)'s versioned `--json` contract rather
+> than parsing its terminal output, so the two upgrade independently.
+
+---
 
 ```
  pgterm   ▸ production  PROD                                                                        ^K commands  ? help
@@ -41,6 +71,40 @@ schemas and tables, and **Branches** lists the database's pgrun branches.
 
 Below 100 columns the sidebar collapses to a tab strip and everything else
 stays put, so pgterm still works in a split pane.
+
+## Why pgterm
+
+Watching several databases usually means several terminals, each running
+something different, none of them telling you which one needs you. pgterm is
+the one window: every database you care about in a sidebar, checked in the
+background, with the one in trouble marked while you keep reading the one
+you're on.
+
+- **It reuses pgbot rather than reimplementing it.** Diagnostics are pgbot's
+  job, and pgterm renders its versioned JSON. The two upgrade independently
+  and never disagree about a finding, because only one of them decides.
+- **Read-only unless you say otherwise.** Health checks cannot write at all.
+  The SQL tab runs inside a `READ ONLY` transaction until a profile opts in,
+  so the server refuses a write rather than a keyword check of ours.
+- **No connection string is ever stored.** The config file holds environment
+  variable *names*. Secrets resolve in memory and reach a child process
+  through its environment, never argv, never the screen, never disk.
+- **It goes where the database is.** One static binary, over SSH, inside tmux,
+  through a jump host. No daemon, no browser, no Electron.
+
+## Requirements
+
+| | |
+|---|---|
+| **Terminal** | 80×24 minimum; the sidebar appears at 100 columns |
+| **PostgreSQL** | 14 to 18 |
+| **[pgbot](https://pgbot.dev)** | required — every diagnostic runs through it |
+| **[pgrun](https://github.com/pgrundev/pgrun-cli)** | optional — only the Branches tab |
+| **OpenSSH** | optional — only for a jump host |
+
+pgterm finds each of them on `PATH`, or wherever `PGBOT_BIN`, `PGRUN_BIN` and
+`PGTERM_SSH_BIN` point. Missing ones are reported where they would have been
+used, not at startup.
 
 ## Try it in 10 seconds (no database needed)
 
@@ -252,7 +316,11 @@ against it too.
   `h`/`l` step through Inspect · Queries · Indexes · Tables · Why.
 - `Ctrl-K` (or `:`) opens the command palette. `/` is still the command bar.
 
-## The Overview tab
+## The tabs
+
+Five per database, and each database remembers which one you were on.
+
+### Overview
 
 Six tiles, then the same four gauges pgbot's own `inspect` shows, computed
 from the same JSON by the same rules so the two never disagree:
@@ -268,7 +336,17 @@ Under them, the findings that need attention with pgbot's own confidence, then
 a `✓` line per subsystem that came back clean. Press `Enter` (or `2`) for the
 full report.
 
-## SQL and Data
+### PgBot
+
+pgbot's own report, unchanged: findings grouped by severity with their
+evidence, remediation and caveats, then `Queries`, `Indexes`, `Tables` and
+`Why` as sub-tabs (`←`/`→`, or `h`/`l`). The tab label goes bold when the
+finding set changed since you last looked at it, and clears when you do.
+
+pgterm never edits, re-grades or summarises what pgbot says. "Unused" never
+becomes "delete".
+
+### SQL and Data
 
 The SQL tab runs a query against the database and shows the rows. The Data
 tab browses schemas, then tables with size and row estimates, then a page of
@@ -296,7 +374,7 @@ writes = true    # lift READ ONLY for this database only
 TLS follows the connection string's own `sslmode`; pgterm never weakens it.
 Nothing you type is written to disk.
 
-## Branches
+### Branches
 
 When a database has a pgrun project, its branches appear in the sidebar and
 on the Branches tab:
@@ -378,6 +456,55 @@ When a database you are *not* looking at turns critical or unavailable, a
 one-line toast appears at the right of the command bar for five seconds
 (and rings the bell if you asked for one). Nothing interrupts the database
 you are actually reading.
+
+### Environment reference
+
+| Variable | What it does |
+|---|---|
+| `PGTERM_CONFIG` | config file path, overriding the XDG lookup |
+| `PGBOT_BIN` | the pgbot binary to run |
+| `PGRUN_BIN` | the pgrun binary, for the Branches tab |
+| `PGTERM_SSH_BIN` | the ssh binary, for a jump host |
+| `NO_COLOR` | honoured by pgbot's own output |
+
+Database connection strings are **not** listed here on purpose: each one lives
+in whichever variable a profile names, and pgterm only ever stores that name.
+
+## Troubleshooting
+
+**"pgbot not found."** Every diagnostic runs through pgbot, so pgterm cannot
+work without it. Install it with `brew install pgrundev/tap/pgbot` or from
+[pgbot.dev](https://pgbot.dev), or point `PGBOT_BIN` at it.
+
+**"Environment variable X is not set."** pgterm stores the variable's *name*,
+never its value, and resolves it when it launches. Export it in the shell you
+start pgterm from, and put the `export` line in your shell profile so it
+survives a new window.
+
+**The screen says "Terminal too small."** pgterm needs 80×24. The sidebar
+appears at 100 columns; below that it falls back to a tab strip, which is a
+layout, not an error.
+
+**The SQL tab refuses a write.** That is the default. Every statement runs in
+a `READ ONLY` transaction until a profile sets `writes = true`, and the server
+is what refuses — see [SQL and Data](#sql-and-data).
+
+**A tunnelled database will not connect.** pgterm runs your own `ssh` with
+`BatchMode`, so it fails rather than prompting into a screen that cannot
+answer. Check that `ssh <jump-host>` works on its own first: an agent key, a
+`known_hosts` entry and `~/.ssh/config` all behave exactly as they do there.
+The tab shows ssh's own reason.
+
+**The Branches tab says no project is set.** Add `pgrun_project` to that
+database's block; `pgrun project list` shows the slugs.
+
+**No hand pointer over clickable things.** The pointer shape is the
+terminal's to give. Ghostty, kitty, WezTerm, foot and xterm implement the
+request; others ignore it. The underline works everywhere — see
+[Mouse](#mouse).
+
+**Something looks wrong and you want the raw data.** `pgbot inspect --json`
+against the same database is exactly what pgterm is rendering.
 
 ## Building
 
