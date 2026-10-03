@@ -76,6 +76,12 @@ fn main() {
         &dir.join("invocations.log"),
         &format!("{} url={dsn}", args.join(" ")),
     );
+    // Its own file, not another key on the line above: the url= parse in the
+    // tests must keep seeing the DSN as the tail.
+    append_line(
+        &dir.join("ssh.log"),
+        &std::env::var("PGBOT_SSH_TUNNEL").unwrap_or_else(|_| "-".into()),
+    );
 
     let _ = std::fs::write(dir.join(format!("running.{}", std::process::id())), b"");
     append_line(&dir.join("peaks.log"), &live_markers(&dir).to_string());

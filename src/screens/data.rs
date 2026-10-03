@@ -140,6 +140,7 @@ mod tests {
             stage: None,
             pgrun_project: None,
             writes: false,
+            ssh: None,
         })
     }
 
